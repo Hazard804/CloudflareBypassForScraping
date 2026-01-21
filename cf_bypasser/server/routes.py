@@ -13,7 +13,7 @@ from cf_bypasser.core.mirror import RequestMirror
 from cf_bypasser.server.models import (
     CookieRequest, CookieResponse, MirrorRequestHeaders,
     MirrorResponse, CacheStatsResponse, CacheClearResponse, ErrorResponse,
-    MirrorRequestInfo, CookieGenerationInfo
+    MirrorRequestInfo, CookieGenerationInfo, CacheRefreshResponse
 )
 
 # Global instances
@@ -278,6 +278,77 @@ def setup_routes(app: FastAPI):
         except Exception as e:
             logger.error(f"Error getting cache stats: {e}")
             raise HTTPException(status_code=500, detail=f"Failed to get cache stats: {str(e)}")
+
+    @app.post("/cache/refresh", response_model=CacheRefreshResponse, responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}})
+    async def refresh_cache(
+        url: Optional[str] = Query(None, description="Target URL to refresh cookies for"),
+        proxy: Optional[str] = Query(None, description="Proxy URL (optional)")
+    ):
+        """
+        Force refresh Cloudflare cookies for a specific URL.
+        This invalidates the cached cookies and generates new ones immediately.
+        
+        Parameters:
+        - url: Target URL to refresh cookies for (required)
+        - proxy: Optional proxy URL for the request
+        """
+        # Validate URL parameter
+        if not url:
+            raise HTTPException(
+                status_code=400,
+                detail="url parameter is required"
+            )
+        
+        # Validate URL format
+        if not is_safe_url(url):
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid or unsafe URL - localhost and private IPs are not allowed"
+            )
+        
+        # Validate proxy format if provided
+        if proxy and not proxy.startswith(('http://', 'https://', 'socks4://', 'socks5://')):
+            raise HTTPException(
+                status_code=400,
+                detail="Proxy must start with http://, https://, socks4://, or socks5://"
+            )
+        
+        try:
+            from urllib.parse import urlparse
+            hostname = urlparse(url).netloc
+            start_time = time.time()
+            
+            logger.info(f"Force refreshing cookies for {url} (proxy: {'yes' if proxy else 'no'})")
+            
+            # Use the global bypasser or create a new one
+            bypasser = global_bypasser or CamoufoxBypasser(max_retries=5, log=True)
+            
+            # Refresh cookies (invalidate cache and generate new)
+            data = await bypasser.refresh_cookies(url, proxy)
+            
+            if not data:
+                raise HTTPException(status_code=500, detail="Failed to refresh Cloudflare cookies")
+            
+            generation_time = int((time.time() - start_time) * 1000)
+            cf_cookies = [name for name in data["cookies"].keys() if name.startswith(('cf_', '__cf'))]
+            
+            logger.info(f"Successfully refreshed {len(data['cookies'])} cookies in {generation_time}ms")
+            logger.info(f"Cloudflare cookies: {cf_cookies}")
+            
+            return CacheRefreshResponse(
+                status="success",
+                message=f"Cookies refreshed successfully for {hostname}",
+                hostname=hostname,
+                cookies_count=len(data["cookies"]),
+                user_agent=data["user_agent"],
+                generation_time_ms=generation_time
+            )
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error refreshing cookies for {url}: {e}")
+            raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
     @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
     async def mirror_request(request: Request, path: str = ""):

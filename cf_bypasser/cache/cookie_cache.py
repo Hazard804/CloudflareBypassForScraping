@@ -112,13 +112,17 @@ class CookieCache:
                 self._save_cache()
                 logging.info(f"Cleared {len(expired_keys)} expired cache entries")
     
-    def invalidate(self, hostname: str):
-        """Invalidate cached cookies for a specific hostname."""
+    def invalidate(self, hostname: str) -> bool:
+        """Invalidate cached cookies for a specific hostname. Returns True if found and removed."""
         with self.lock:
             if hostname in self.cache:
                 del self.cache[hostname]
                 self._save_cache()
                 logging.info(f"Invalidated cache for {hostname}")
+                return True
+            else:
+                logging.info(f"No cache entry found for {hostname}")
+                return False
     
     def clear_all(self):
         """Clear all cached entries."""

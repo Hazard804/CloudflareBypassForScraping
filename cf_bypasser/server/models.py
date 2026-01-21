@@ -123,3 +123,26 @@ class BypassAttemptResult(BaseModel):
     challenge_type: Optional[str] = Field(None, description="Type of challenge encountered")
     time_taken_ms: int = Field(..., description="Time taken for this attempt")
     error_message: Optional[str] = Field(None, description="Error message if failed")
+
+
+class CacheRefreshRequest(BaseModel):
+    """Request model for cache refresh endpoint."""
+    url: str = Field(..., description="Target URL to refresh cookies for")
+    proxy: Optional[str] = Field(None, description="Proxy URL (optional)")
+    
+    @field_validator('proxy')
+    @classmethod
+    def validate_proxy(cls, v):
+        if v and not v.startswith(('http://', 'https://', 'socks4://', 'socks5://')):
+            raise ValueError('Proxy must start with http://, https://, socks4://, or socks5://')
+        return v
+
+
+class CacheRefreshResponse(BaseModel):
+    """Response model for cache refresh operation."""
+    status: str = Field(..., description="Operation status (success/failure)")
+    message: str = Field(..., description="Operation message")
+    hostname: str = Field(..., description="Target hostname")
+    cookies_count: Optional[int] = Field(None, description="Number of cookies refreshed")
+    user_agent: Optional[str] = Field(None, description="New user agent generated")
+    generation_time_ms: Optional[int] = Field(None, description="Time taken to generate new cookies (ms)")

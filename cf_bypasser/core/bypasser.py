@@ -371,3 +371,25 @@ class CamoufoxBypasser:
     async def cleanup(self) -> None:
         """Backward compatibility method - no longer stores browser instances."""
         pass
+
+    async def refresh_cookies(self, url: str, proxy: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """
+        Force refresh cookies for a URL by invalidating cache and generating new ones.
+        
+        Args:
+            url: Target URL to refresh cookies for
+            proxy: Optional proxy URL
+            
+        Returns:
+            Dictionary with new cookies and user agent, or None if refresh failed
+        """
+        hostname = urlparse(url).netloc
+        cache_key = md5_hash(hostname + (proxy or ""))
+        
+        # Invalidate the cache entry
+        self.log_message(f"Invalidating cache for {hostname}...")
+        self.cookie_cache.invalidate(cache_key)
+        
+        # Generate new cookies
+        self.log_message(f"Generating fresh cookies for {hostname}...")
+        return await self.get_or_generate_cookies(url, proxy)
