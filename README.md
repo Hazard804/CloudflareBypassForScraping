@@ -80,7 +80,21 @@ Our products are ideal for a variety of use cases including data monitoring, sur
 
 May IPOasis, this unique online 'oasis,' empower every user seeking high-quality residential proxies. 🩵
 
+---
 
+### Scrape.do
+
+<a href="https://scrape.do/?utm_source=github&utm_medium=cfbypass"><img src="https://github.com/user-attachments/assets/04c49095-715b-4751-adf4-ae38fbe16e77" /></a>
+
+[Scrape.do](https://scrape.do/?utm_source=github&utm_medium=cfbypass) is the ultimate toolkit for collecting public data at scale. Unmatched speed, unbeatable prices, unblocked access.
+
+One line of code. Instant data access
+
+- 🔁 Automatic Proxy Rotation 
+- 🤖 Bypass Anti-bot Solutions 
+- ⛏️ Seamless Web Scraping
+
+[Claim your free trial](https://scrape.do/?utm_source=github&utm_medium=cfbypass)
 
 # 🚀 Quick Start
 
