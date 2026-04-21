@@ -127,10 +127,14 @@ class CamoufoxBypasser:
         """Check if Cloudflare challenge has been bypassed."""
         try:
             title = await page.title()
+            if "just a moment" in title.lower():
+                return False
             html_content = await page.content()
-            return "just a moment" not in title.lower() and "please complete the captcha" not in html_content.lower()
+            if "please complete the captcha" in html_content.lower():
+                return False
+            return True
         except Exception as e:
-            self.log_message(f"Error checking page title: {e}")
+            self.log_message(f"Error checking bypass status: {e}")
             return False
     
     async def determine_challenge_type(self, page) -> CaptchaType:
@@ -153,14 +157,21 @@ class CamoufoxBypasser:
         try:
             # Navigate to the target URL
             self.log_message(f"Navigating to {url}")
-            await page.goto(url, wait_until="networkidle", timeout=10000)
+            try:
+                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            except Exception as nav_err:
+                self.log_message(f"Navigation warning: {nav_err}")
+            # Wait for challenge scripts to load and execute
             await asyncio.sleep(5)
-            html_content = await page.content()
-            
-            if "cloudflare" not in html_content:
+            try:
+                html_content = await page.content()
+            except Exception:
+                html_content = ""
+
+            if "cloudflare" not in html_content.lower():
                 self.log_message("No Cloudflare protection detected on the page -- either not protected or already bypassed")
                 return True
-            
+
             # Check if we need to solve a challenge
             if await self.is_bypassed(page):
                 self.log_message("No Cloudflare challenge detected or already bypassed")
@@ -171,28 +182,38 @@ class CamoufoxBypasser:
             if not challenge_type:
                 self.log_message("Could not determine challenge type")
                 return False
-            
-            expected_selector = "#root"
+
+            # Use ClickSolver to find and click the Cloudflare checkbox.
+            # Don't pass expected_content_selector — it causes false negatives
+            # when the target page doesn't have a matching element.
             captcha_container = page
-            is_solved = False                
-            async with ClickSolver(framework=FrameworkType.CAMOUFOX, page=page, max_attempts=2, attempt_delay=1) as solver:
- 
-                await solver.solve_captcha(
-                    captcha_container=captcha_container,
-                    captcha_type=challenge_type,
-                    expected_content_selector=expected_selector,)
+            try:
+                async with ClickSolver(framework=FrameworkType.CAMOUFOX, page=page, max_attempts=3, attempt_delay=3) as solver:
+                    await solver.solve_captcha(
+                        captcha_container=captcha_container,
+                        captcha_type=challenge_type)
+                    if await self.is_bypassed(page):
+                        self.log_message("Cloudflare challenge solved successfully!")
+                        return True
+            except Exception as e:
+                self.log_message(f"Click solver reported: {e}")
 
-                is_solved = "just a moment" not in await page.title()
-            
+            # The click solver's internal verification can be too hasty —
+            # the checkbox click may have worked but the page needs more
+            # time to navigate past the challenge. Poll for resolution.
+            self.log_message("Waiting for page to resolve after challenge interaction...")
+            for i in range(self.max_retries):
+                await asyncio.sleep(3)
+                try:
+                    if await self.is_bypassed(page):
+                        self.log_message("Cloudflare challenge resolved after waiting")
+                        return True
+                except Exception:
+                    # Page may be mid-navigation — keep polling
+                    pass
 
-            if is_solved:
-                self.log_message("✅ Cloudflare challenge solved successfully!")
-                # Wait a bit more to ensure cookies are set
-                await asyncio.sleep(1)
-                return True
-            else:
-                self.log_message("❌ Failed to solve Cloudflare challenge")
-                return False
+            self.log_message("Failed to solve Cloudflare challenge")
+            return False
 
         except Exception as e:
             self.log_message(f"Error solving Cloudflare challenge: {e}")
