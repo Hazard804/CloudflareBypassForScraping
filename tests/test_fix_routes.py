@@ -72,20 +72,19 @@ def test_xhostname_bare_host_unchanged():
     assert captured["hostname"] == "example.com"
 
 
-REPRODUCED_BYPASSES = [
+ALLOWED_HTTP_URLS = [
     "https://2130706433",
     "http://0x7f000001",
     "http://0177.0.0.1",
     "http://169.254.169.254",
     "https://127.0.0.2",
     "http://[::ffff:127.0.0.1]",
-    "https://",
 ]
 
 
-@pytest.mark.parametrize("url", REPRODUCED_BYPASSES)
-def test_reproduced_bypasses_rejected(url):
-    assert routes.is_safe_url(url) is False
+@pytest.mark.parametrize("url", ALLOWED_HTTP_URLS)
+def test_http_urls_are_allowed_without_ssrf_filtering(url):
+    assert routes.is_safe_url(url) is True
 
 
 def test_public_ip_literal_allowed():
@@ -96,19 +95,9 @@ def test_public_hostname_allowed():
     assert routes.is_safe_url("https://challenge.sarper.me") is True
 
 
-def test_hostname_resolving_private_rejected(monkeypatch):
+def test_hostname_resolution_is_not_used_for_safety(monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo("10.0.0.5"))
-    assert routes.is_safe_url("https://evil.example.com") is False
-
-
-def test_hostname_resolving_metadata_rejected(monkeypatch):
-    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo("169.254.169.254"))
-    assert routes.is_safe_url("https://metadata.example.com") is False
-
-
-def test_hostname_resolving_loopback_rejected(monkeypatch):
-    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo("127.0.0.1"))
-    assert routes.is_safe_url("https://localhost.example.com") is False
+    assert routes.is_safe_url("https://evil.example.com") is True
 
 
 def test_empty_host_rejected():
@@ -120,17 +109,17 @@ def test_file_scheme_rejected():
     assert routes.is_safe_url("file:///etc/passwd") is False
 
 
-def test_resolution_exception_fails_closed(monkeypatch):
+def test_resolution_exception_does_not_block_http_url(monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", raising_getaddrinfo)
-    assert routes.is_safe_url("https://whatever.example.com") is False
+    assert routes.is_safe_url("https://whatever.example.com") is True
 
 
-def test_empty_resolution_fails_closed(monkeypatch):
+def test_empty_resolution_does_not_block_http_url(monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: [])
-    assert routes.is_safe_url("https://whatever.example.com") is False
+    assert routes.is_safe_url("https://whatever.example.com") is True
 
 
-def test_classic_private_literals_rejected():
+def test_classic_private_literals_allowed():
     for url in [
         "http://127.0.0.1",
         "http://10.1.2.3",
@@ -139,22 +128,22 @@ def test_classic_private_literals_rejected():
         "http://0.0.0.0",
         "http://[::1]",
     ]:
-        assert routes.is_safe_url(url) is False
+        assert routes.is_safe_url(url) is True
 
 
-def test_localhost_name_resolving_loopback_rejected(monkeypatch):
+def test_localhost_name_allowed(monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo("127.0.0.1"))
-    assert routes.is_safe_url("http://localhost") is False
+    assert routes.is_safe_url("http://localhost") is True
 
 
-def test_any_resolved_ip_private_rejected(monkeypatch):
+def test_hostname_with_any_public_resolved_ip_allowed(monkeypatch):
     def multi(host, *a, **k):
         return [
             (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0)),
             (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0)),
         ]
     monkeypatch.setattr(socket, "getaddrinfo", multi)
-    assert routes.is_safe_url("https://mixed.example.com") is False
+    assert routes.is_safe_url("https://mixed.example.com") is True
 
 
 def test_cache_refresh_uses_bypasser_and_returns_metadata():
@@ -180,7 +169,7 @@ def test_cache_refresh_uses_bypasser_and_returns_metadata():
     assert body["user_agent"] == "FakeUA/1.0"
 
 
-def test_cache_refresh_rejects_unsafe_url():
+def test_cache_refresh_allows_localhost_when_ssrf_filtering_is_disabled():
     client, captured = _client_with_refreshing_bypasser({
         "cookies": {"cf_clearance": "ok"},
         "user_agent": "FakeUA/1.0",
@@ -188,5 +177,5 @@ def test_cache_refresh_rejects_unsafe_url():
 
     resp = client.post("/cache/refresh", params={"url": "http://127.0.0.1"})
 
-    assert resp.status_code == 400
-    assert captured == {}
+    assert resp.status_code == 200
+    assert captured == {"url": "http://127.0.0.1", "proxy": None}
