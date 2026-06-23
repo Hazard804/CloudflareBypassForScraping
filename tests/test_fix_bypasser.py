@@ -98,6 +98,17 @@ def patch_launch(monkeypatch, context):
     monkeypatch.setattr(bp.cb, "launch_context_async", fake_launch)
 
 
+async def capture_launch_kwargs(monkeypatch, context):
+    captured = {}
+
+    async def fake_launch(**kwargs):
+        captured.update(kwargs)
+        return context
+
+    monkeypatch.setattr(bp.cb, "launch_context_async", fake_launch)
+    return captured
+
+
 @pytest.mark.asyncio
 async def test_content_raises_returns_false(tmp_path):
     b = make_bypasser(tmp_path)
@@ -136,6 +147,48 @@ async def test_setup_browser_sets_timeouts(tmp_path, monkeypatch):
     context, p = await b.setup_browser()
     assert p.default_timeout == bp.DEFAULT_TIMEOUT_MS
     assert p.nav_timeout == bp.DEFAULT_TIMEOUT_MS
+    await b.cleanup_browser(context)
+
+
+@pytest.mark.asyncio
+async def test_setup_browser_defaults_to_headless(tmp_path, monkeypatch):
+    monkeypatch.delenv("CF_BROWSER_HEADLESS", raising=False)
+    b = make_bypasser(tmp_path)
+    page = FakePage()
+    ctx = FakeContext(page)
+    captured = await capture_launch_kwargs(monkeypatch, ctx)
+
+    context, _ = await b.setup_browser()
+
+    assert captured["headless"] is True
+    await b.cleanup_browser(context)
+
+
+@pytest.mark.asyncio
+async def test_setup_browser_headless_env_can_show_browser(tmp_path, monkeypatch):
+    monkeypatch.setenv("CF_BROWSER_HEADLESS", "false")
+    b = make_bypasser(tmp_path)
+    page = FakePage()
+    ctx = FakeContext(page)
+    captured = await capture_launch_kwargs(monkeypatch, ctx)
+
+    context, _ = await b.setup_browser()
+
+    assert captured["headless"] is False
+    await b.cleanup_browser(context)
+
+
+@pytest.mark.asyncio
+async def test_setup_browser_explicit_headless_overrides_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("CF_BROWSER_HEADLESS", "true")
+    b = make_bypasser(tmp_path)
+    page = FakePage()
+    ctx = FakeContext(page)
+    captured = await capture_launch_kwargs(monkeypatch, ctx)
+
+    context, _ = await b.setup_browser(headless=False)
+
+    assert captured["headless"] is False
     await b.cleanup_browser(context)
 
 

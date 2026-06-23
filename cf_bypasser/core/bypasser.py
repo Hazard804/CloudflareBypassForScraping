@@ -33,6 +33,16 @@ _inflight_locks: dict = {}
 ChallengeResult = namedtuple("ChallengeResult", ("success", "cf_detected", "status"))
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    return os.environ.get(name, str(default)).lower() in ("1", "true", "yes", "on")
+
+
+def _resolve_browser_headless(headless: Optional[bool]) -> bool:
+    if headless is not None:
+        return bool(headless)
+    return _env_bool("CF_BROWSER_HEADLESS", True)
+
+
 def _browser_semaphore() -> asyncio.Semaphore:
     # read _MAX_CONCURRENT_BROWSERS at creation time so monkeypatching it takes effect
     return per_loop(_browser_semaphores, lambda: asyncio.Semaphore(_MAX_CONCURRENT_BROWSERS))
@@ -99,7 +109,7 @@ class CloakBypasser:
             self.log_message(f"Error parsing proxy {proxy}: {e}")
             return None
 
-    async def setup_browser(self, proxy: Optional[str] = None, lang: str = "en", user_agent: Optional[str] = None, headless: bool = False) -> tuple:
+    async def setup_browser(self, proxy: Optional[str] = None, lang: str = "en", user_agent: Optional[str] = None, headless: Optional[bool] = None) -> tuple:
         """Launch a fresh, profile-less CloakBrowser context. Returns (context, page)."""
         self.cookie_cache.clear_expired()
 
@@ -113,7 +123,7 @@ class CloakBypasser:
                 raise ValueError(f"Invalid proxy, refusing to continue direct: {proxy}")
 
         launch_kwargs = dict(
-            headless=headless,
+            headless=_resolve_browser_headless(headless),
             args=[FAKE_SHADOW_ARG],
             geoip=bool(proxy_config),
             locale=lang if lang else None,

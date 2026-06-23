@@ -29,6 +29,7 @@ A rotating residential proxy can change its exit IP unexpectedly, which invalida
 
 | Variable | Default | Description |
 |---|---|---|
+| `CF_BROWSER_HEADLESS` | `true` | Launch the stealth browser in headless mode. Set to `false` to show the browser window when debugging interactive challenges. Accepts `1`/`true`/`yes`/`on` for enabled. |
 | `CLOAKBROWSER_AUTO_UPDATE` | `false` | Set to `false` by the app so it does not check PyPI for a newer Chromium build on every launch. The bundled CloakBrowser library also reads `CLOAKBROWSER_BINARY_PATH`, `CLOAKBROWSER_CACHE_DIR`, and `CLOAKBROWSER_DOWNLOAD_URL` — see the CloakBrowser docs. |
 
 ## Example
