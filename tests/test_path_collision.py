@@ -1,19 +1,10 @@
 import pytest
-from fastapi.testclient import TestClient
 from unittest.mock import AsyncMock, patch, MagicMock
 
 
 @pytest.fixture
-def client():
-    """Create a test client for the FastAPI server."""
-    from cf_bypasser.server.app import create_app
-    app = create_app()
-    return TestClient(app)
-
-
-@pytest.fixture
 def mock_bypasser():
-    """Mock the CamoufoxBypasser for testing."""
+    """Mock the CloakBypasser for testing."""
     mock_instance = MagicMock()
     mock_instance.get_or_generate_cookies = AsyncMock(return_value={
         'cookies': {'cf_clearance': 'test_token_123', 'session': 'abc'},

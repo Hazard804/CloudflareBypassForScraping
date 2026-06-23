@@ -54,113 +54,82 @@ One line of code. Instant data access
 
 # 🚀 Quick Start
 
-### Using Docker Compose
 ```bash
-git clone https://github.com/sarperavci/CloudflareBypassForScraping.git
-cd CloudflareBypassForScraping
-docker compose pull && docker compose up -d
-```
-
-### Using Docker directly
-```bash
-# Pull and run the latest image
 docker run -p 8000:8000 ghcr.io/sarperavci/cloudflarebypassforscraping:latest
 ```
 
-## Manual Installation
-```bash
-pip install -r requirements.txt
-python server.py
-```
-
-# Usage
-
-## Request Mirroring (Any HTTP Method)
-
-Request mirroring is a new technique that allows you to forward any HTTP request through the Cloudflare bypass server. That lets you to handle seamlessly both clearance cookie generation and SSL/TLS fingerprinting challenges.
-
-Simply, change your API base URL to point to the local server and add the `x-hostname` header with the target hostname. You can add other headers or body as needed.
+Then point your scraper at the server and add an `x-hostname` header:
 
 ```bash
-# GET request
-curl "http://localhost:8000/api/data" -H "x-hostname: example-site-protected-with-cf.com"
-
-# POST request  
-curl -X POST "http://localhost:8000/api/submit" \
-  -H "x-hostname: cf-protected-website.com" \
-  -H "Content-Type: application/json" \
-  -d '{"key": "value"}'
+curl "http://localhost:8000/api/data" -H "x-hostname: cf-protected-website.com"
 ```
 
-Initial request will generate and cache Cloudflare cookies, subsequent requests will use cached cookies automatically. 
+# How it works
 
-### Miscellaneous Headers
+Two ways to get past Cloudflare, both powered by a real stealth browser (a patched Chromium via CloakBrowser).
 
-- `x-hostname`: Target hostname (required)
-- `x-proxy`: Proxy URL (optional) 
-- `x-bypass-cache`: Force fresh cookies (optional)
+## 🍪 Cookie generation — `/cookies`
 
-These three headers let you control the bypassing behavior per request. You can set them as needed.
+Ask the server for clearance cookies for a URL and use them however you like:
 
 ```bash
-curl "http://localhost:8000/api/data" \
-  -H "x-hostname: protected-site.com" \
-  -H "x-proxy: http://user:pass@proxyserver:port" \
-  -H "x-bypass-cache: true"
+curl "http://localhost:8000/cookies?url=https://protected-site.com"
 ```
 
-### Basic Cookie Extraction
-
-The `/cookies` endpoint allows you to get Cloudflare cookies for a specific URL without mirroring a request. A random Firefox version on a random OS is used as the user agent.
-
-```bash
-$ curl "http://localhost:8000/cookies?url=https://nopecha.com/demo/cloudflare"
-```
 ```json
 {
   "cookies": {
-    "cf_clearance": "SJHuYhHrTZpXDUe8iMuzEUpJxocmOW8ougQVS0.aK5g-1723665177-1.0.1.1-5_NOoP19LQZw4TQ4BLwJmtrXBoX8JbKF5ZqsAOxRNOnW2rmDUwv4hQ7BztnsOfB9DQ06xR5hR_hsg3n8xteUCw"
+    "cf_clearance": "SJHuYhHrTZpXDUe8iMuzEUpJxocmOW8ougQVS0.aK5g-1723665177-1.0.1.1-5_NOoP19LQ..."
   },
-  "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:145.0) Gecko/20100101 Firefox/145.0"
+  "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
 }
 ```
 
-### HTML Content Extraction
-
-The `/html` endpoint returns the full HTML content of a page after bypassing Cloudflare protection. The HTML is returned directly (not as JSON).
+Route the bypass through a proxy with the `proxy` query param:
 
 ```bash
-$ curl "http://localhost:8000/html?url=https://nopecha.com/demo/cloudflare"
+curl "http://localhost:8000/cookies?url=https://protected-site.com&proxy=http://user:pass@host:port"
 ```
 
-This returns the raw HTML content with additional headers containing bypass information:
-- `x-cf-bypasser-cookies`: Number of cookies generated
-- `x-cf-bypasser-user-agent`: User agent used for bypass
-- `x-cf-bypasser-final-url`: Final URL after redirects
-- `x-processing-time-ms`: Time taken to process the request
+It launches a stealth browser, navigates to the URL, and solves the Cloudflare
+challenge — non-interactive challenges resolve on their own, and interactive
+Turnstile checkboxes are located inside their shadow DOM and clicked natively.
+Once cleared, it returns the `cf_clearance` cookie **and** the exact
+`user-agent` that earned it — you must send both together or Cloudflare rejects
+the cookie. The pair is cached, so repeat calls are instant.
 
+Use this when you drive your own HTTP client and just need valid cookies.
 
-## Build from Source  
-```bash
-# Build the image
-docker build -t cloudflare-bypass .
+## 🪞 Mirror mode — any path + `x-hostname`
 
-# Run the container
-docker run -p 8000:8000 cloudflare-bypass
-```
-
-# Backward Compatibility
-
-Existing integrations continue to work unchanged:
+Point your scraper's base URL at the server and add an `x-hostname` header; the
+server transparently proxies the request to the real site with Cloudflare
+already bypassed. Add `x-proxy` to route through your own proxy:
 
 ```bash
-# Legacy endpoint still works
-curl "http://localhost:8000/cookies?url=https://example.com"
-
-# Old bypass server - I'm keeping it as alternative method
-pip install -r old_server_requirements.txt
-python old_server.py
+curl -X POST "http://localhost:8000/api/submit" \
+  -H "x-hostname: protected-site.com" \
+  -H "x-proxy: http://user:pass@host:port" \
+  -H "Content-Type: application/json" \
+  -d '{"key":"value"}'
 ```
+
+It generates (or reuses cached) clearance cookies for the host, then **replays
+your exact request** — method, path, query, headers, body — to the real site
+using an HTTP client that mimics Chrome's TLS/JA3 fingerprint, with the
+Cloudflare cookies merged in. You get the real response back unchanged. This
+clears **both** obstacles at once: the JavaScript challenge and TLS
+fingerprinting — with no browser needed on your side.
+
+Use this when you want a drop-in proxy that "just works" for any HTTP method.
+
+See **[docs/USAGE.md](docs/USAGE.md)** for control headers, the `/html`
+endpoint, and more.
+
+# Documentation
+
+- **[Usage](docs/USAGE.md)** — installation, request mirroring, the `/cookies` and `/html` endpoints, control headers.
+- **[Configuration](docs/CONFIGURATION.md)** — environment variables (cookie TTL, proxy exit-IP checking, concurrency limits) and defaults.
 
 # Example Projects
 

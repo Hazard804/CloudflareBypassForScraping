@@ -1,416 +1,397 @@
 import asyncio
 import logging
 import os
-import random
-import time
+from collections import namedtuple
 from typing import Optional, Dict, Any
 from urllib.parse import urlparse
 
-from camoufox.async_api import AsyncCamoufox
-from playwright_captcha import CaptchaType, ClickSolver, FrameworkType
-from playwright_captcha.utils.camoufox_add_init_script.add_init_script import get_addon_path
+# Skip the per-launch PyPI version check (latency/offline-unfriendly in prod/CI)
+os.environ.setdefault("CLOAKBROWSER_AUTO_UPDATE", "false")
 
-from cf_bypasser.utils.misc import md5_hash, get_browser_init_lock
+import cloakbrowser as cb
+
+from cf_bypasser.utils.misc import cache_key, get_browser_init_lock, per_loop
+from cf_bypasser.utils.constants import (
+    DEFAULT_TIMEOUT_MS,
+    CHALLENGE_SETTLE_SECONDS,
+    RETRY_POLL_SECONDS,
+    CONTEXT_CLOSE_TIMEOUT_SECONDS,
+    DEFAULT_MAX_RETRIES,
+    DEFAULT_CACHE_FILE,
+    MAX_CONCURRENT_BROWSERS,
+    IP_CHECK_ENABLED,
+)
+from cf_bypasser.utils.ipcheck import get_exit_ip
 from cf_bypasser.cache.cookie_cache import CookieCache
-from cf_bypasser.utils.config import BrowserConfig, OPERATING_SYSTEMS
 
-# Get addon path for Camoufox init script workaround
-ADDON_PATH = get_addon_path()
+_MAX_CONCURRENT_BROWSERS = MAX_CONCURRENT_BROWSERS
+
+# One semaphore + one in-flight lock registry per event loop (multi-loop pytest safe).
+_browser_semaphores: dict = {}
+_inflight_locks: dict = {}
+
+ChallengeResult = namedtuple("ChallengeResult", ("success", "cf_detected", "status"))
 
 
-class CamoufoxBypasser:
-    """Camoufox bypasser with cookie caching and direct proxy support."""
-    
-    def __init__(self, max_retries: int = 5, log: bool = True, cache_file: str = "cf_cookie_cache.json"):
+def _browser_semaphore() -> asyncio.Semaphore:
+    # read _MAX_CONCURRENT_BROWSERS at creation time so monkeypatching it takes effect
+    return per_loop(_browser_semaphores, lambda: asyncio.Semaphore(_MAX_CONCURRENT_BROWSERS))
+
+
+def _inflight_lock(key: str) -> asyncio.Lock:
+    registry = per_loop(_inflight_locks, dict)
+    lock = registry.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        registry[key] = lock
+    return lock
+
+# Native closed-shadow-root access via the patched Chromium — lets us read and
+# click the Cloudflare Turnstile checkbox without injecting attachShadow patches.
+FAKE_SHADOW_ARG = "--enable-blink-features=FakeShadowRoot"
+
+# JS run inside the Turnstile iframe: walk open + closed shadow roots and return
+# the checkbox centre relative to the iframe viewport.
+_FIND_CHECKBOX_JS = """() => {
+    function find(root){
+        if(!root) return null;
+        const direct = root.querySelector && root.querySelector('input[type=checkbox]');
+        if(direct) return direct;
+        for(const el of (root.querySelectorAll ? root.querySelectorAll('*') : [])){
+            const sr = el.fakeShadowRoot || el.shadowRoot;
+            if(sr){ const r = find(sr); if(r) return r; }
+        }
+        return null;
+    }
+    const cb = find(document);
+    if(!cb) return {found:false};
+    const r = cb.getBoundingClientRect();
+    return {found:true, checked:cb.checked, x:r.x+r.width/2, y:r.y+r.height/2, w:r.width};
+}"""
+
+
+class CloakBypasser:
+    """Cloudflare bypasser backed by CloakBrowser (stealth Chromium) with cookie caching."""
+
+    def __init__(self, max_retries: int = DEFAULT_MAX_RETRIES, log: bool = True, cache_file: str = DEFAULT_CACHE_FILE):
         self.max_retries = max_retries
         self.log = log
         self.cookie_cache = CookieCache(cache_file)
 
     def log_message(self, message: str) -> None:
-        """Log message if logging is enabled."""
         if self.log:
             logging.info(message)
 
     def parse_proxy(self, proxy: str) -> Optional[Dict[str, str]]:
-        """Parse proxy URL and return proxy configuration."""
+        """Parse a proxy URL into a Playwright/CloakBrowser proxy dict."""
         try:
             parsed = urlparse(proxy)
             if not parsed.hostname or not parsed.port:
                 self.log_message(f"Invalid proxy format: {proxy}")
                 return None
-            
-            proxy_config = {
-                "server": f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"
-            }
-            
+
+            proxy_config = {"server": f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"}
             if parsed.username and parsed.password:
                 proxy_config["username"] = parsed.username
                 proxy_config["password"] = parsed.password
-            
             return proxy_config
         except Exception as e:
             self.log_message(f"Error parsing proxy {proxy}: {e}")
             return None
 
-    async def setup_browser(self, proxy: Optional[str] = None, lang: str = "en", user_agent: Optional[str] = None) -> tuple:
-        """Setup Camoufox browser with random OS and configuration. Returns (browser, context, page)."""
-        # Clear expired cache entries
+    async def setup_browser(self, proxy: Optional[str] = None, lang: str = "en", user_agent: Optional[str] = None, headless: bool = False) -> tuple:
+        """Launch a fresh, profile-less CloakBrowser context. Returns (context, page)."""
         self.cookie_cache.clear_expired()
-        
-        # Determine OS from user_agent if provided, otherwise random
-        selected_os = None
-        if user_agent:
-            ua_lower = user_agent.lower()
-            if "windows" in ua_lower:
-                selected_os = "windows"
-            elif "macintosh" in ua_lower or "mac os" in ua_lower:
-                selected_os = "macos"
-            elif "linux" in ua_lower or "x11" in ua_lower:
-                selected_os = "linux"
-        
-        if not selected_os:
-            selected_os = random.choice(OPERATING_SYSTEMS)
-            
-        self.log_message(f"Using OS: {selected_os}")
-        
-        # Generate random config for the selected OS
-        random_config = BrowserConfig.generate_random_config(selected_os, lang=lang)
-        
-        # Override user agent if provided
-        if user_agent:
-            random_config['navigator.userAgent'] = user_agent
-            self.log_message(f"Using provided User-Agent: {user_agent}")
-        else:
-            self.log_message(f"Generated config with UA: {random_config.get('navigator.userAgent', 'N/A')}")
-            
-        self.log_message(f"Screen resolution: {random_config['window.outerWidth']}x{random_config['window.outerHeight']}")
 
-        # Setup proxy configuration if provided
         proxy_config = None
         if proxy:
             proxy_config = self.parse_proxy(proxy)
             if proxy_config:
                 self.log_message(f"Using proxy: {proxy_config['server']}")
             else:
-                self.log_message("Failed to parse proxy, continuing without proxy")
+                # never silently fall back to direct: that leaks the real IP
+                raise ValueError(f"Invalid proxy, refusing to continue direct: {proxy}")
 
-        # Use global lock to serialize browser initialization (browserforge is not thread-safe)
-        async with get_browser_init_lock():
-            camoufox = AsyncCamoufox(
-                headless=True,
-                geoip=True if proxy else False,
-                humanize=False,
-                os=selected_os,
-                locale=lang if lang else "en-US",
-                i_know_what_im_doing=True,
-                config={'forceScopeAccess': True, **random_config},
-                disable_coop=True,
-                main_world_eval=True,
-                addons=[os.path.abspath(ADDON_PATH)],
-                block_images=False,
-                block_webrtc=True,
-                enable_cache=False,
-            )
-            browser = await camoufox.__aenter__()
-
-        # Create context with proxy if provided
-        context_options = {}
+        launch_kwargs = dict(
+            headless=headless,
+            args=[FAKE_SHADOW_ARG],
+            geoip=bool(proxy_config),
+            locale=lang if lang else None,
+        )
         if proxy_config:
-            context_options["proxy"] = proxy_config
+            launch_kwargs["proxy"] = proxy_config
+        if user_agent:
+            launch_kwargs["user_agent"] = user_agent
 
-        context = await browser.new_context(**context_options)
-        page = await context.new_page()
-        
-        return camoufox, browser, context, page
+        context = None
+        try:
+            # browserforge fingerprint generation isn't thread-safe; serialize launches
+            async with get_browser_init_lock():
+                context = await cb.launch_context_async(**launch_kwargs)
+            page = context.pages[0] if context.pages else await context.new_page()
+            page.set_default_timeout(DEFAULT_TIMEOUT_MS)
+            page.set_default_navigation_timeout(DEFAULT_TIMEOUT_MS)
+            return context, page
+        except BaseException:
+            # a partial launch must never orphan a browser process,
+            # even on cancellation/timeout (hence BaseException)
+            await self.cleanup_browser(context)
+            raise
+
+    # block-specific phrases; "cloudflare ray id" alone is NOT enough (legit footers have it)
+    _BLOCK_MARKERS = (
+        "you have been blocked",
+        "sorry, you have been blocked",
+        "error 1020",
+        "access denied",
+    )
 
     async def is_bypassed(self, page) -> bool:
-        """Check if Cloudflare challenge has been bypassed."""
+        """Check if the Cloudflare challenge has been cleared (and not a block page)."""
         try:
             title = await page.title()
             if "just a moment" in title.lower():
                 return False
             html_content = await page.content()
-            if "please complete the captcha" in html_content.lower():
+            lowered = html_content.lower()
+            if "please complete the captcha" in lowered:
+                return False
+            if any(marker in lowered for marker in self._BLOCK_MARKERS):
                 return False
             return True
         except Exception as e:
             self.log_message(f"Error checking bypass status: {e}")
             return False
-    
-    async def determine_challenge_type(self, page) -> CaptchaType:
-        """Determine the type of Cloudflare challenge present."""
-        try:
-            html_content = await page.content()
-            title = await page.title()
-            if "please complete the captcha" in html_content.lower():
-                return CaptchaType.CLOUDFLARE_TURNSTILE
-            elif "just a moment" in title.lower():
-                return CaptchaType.CLOUDFLARE_INTERSTITIAL
-            else:
-                return None
-        except Exception as e:
-            self.log_message(f"Error determining challenge type: {e}")
-            return None
 
-    async def solve_cloudflare_challenge(self, url: str, page) -> bool:
-        """Navigate to URL and solve Cloudflare challenge using playwright-captcha."""
+    async def _click_turnstile_checkbox(self, page) -> bool:
+        """Find the Turnstile checkbox via fakeShadowRoot and click it. Returns True if clicked."""
+        cf_frames = [f for f in page.frames if "challenges.cloudflare" in (f.url or "")]
+        for frame in cf_frames:
+            try:
+                info = await frame.evaluate(_FIND_CHECKBOX_JS)
+                if not info.get("found") or info.get("w", 0) <= 0 or info.get("checked"):
+                    continue
+                frame_el = await frame.frame_element()
+                box = await frame_el.bounding_box()
+                if not box:
+                    continue
+                # checkbox coords are iframe-relative; offset by the iframe's page position
+                await page.mouse.click(box["x"] + info["x"], box["y"] + info["y"])
+                # only count it as clicked if the box became checked or disappeared
+                after = await frame.evaluate(_FIND_CHECKBOX_JS)
+                if (not after.get("found")) or after.get("checked"):
+                    self.log_message("Clicked Turnstile checkbox via fakeShadowRoot")
+                    return True
+                self.log_message("Turnstile checkbox click did not register, retrying")
+            except Exception as e:
+                self.log_message(f"Checkbox click attempt failed: {e}")
+        return False
+
+    async def solve_cloudflare_challenge(self, url: str, page) -> tuple:
+        """Navigate to URL and clear any Cloudflare challenge. Returns (success, cf_detected, status)."""
+        cf_detected = False
+        status = 200
         try:
-            # Navigate to the target URL
             self.log_message(f"Navigating to {url}")
             try:
-                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                response = await page.goto(url, wait_until="domcontentloaded", timeout=DEFAULT_TIMEOUT_MS)
+                if response is not None and getattr(response, "status", None):
+                    status = response.status
             except Exception as nav_err:
                 self.log_message(f"Navigation warning: {nav_err}")
-            # Wait for challenge scripts to load and execute
-            await asyncio.sleep(5)
+
+            # let the challenge scripts load before deciding it's unprotected
+            await asyncio.sleep(CHALLENGE_SETTLE_SECONDS)
             try:
                 html_content = await page.content()
+                content_ok = True
             except Exception:
                 html_content = ""
+                content_ok = False
+
+            if not content_ok:
+                # a failed read tells us nothing; never claim success on empty content
+                self.log_message("Could not read page content -- treating as unconfirmed")
+                bypassed = await self.is_bypassed(page)
+                return ChallengeResult(bypassed, cf_detected, status)
 
             if "cloudflare" not in html_content.lower():
-                self.log_message("No Cloudflare protection detected on the page -- either not protected or already bypassed")
-                return True
+                self.log_message("No Cloudflare protection detected -- either not protected or already bypassed")
+                return ChallengeResult(True, cf_detected, status)
 
-            # Check if we need to solve a challenge
+            cf_detected = True
             if await self.is_bypassed(page):
                 self.log_message("No Cloudflare challenge detected or already bypassed")
-                return True
+                return ChallengeResult(True, cf_detected, status)
 
-            self.log_message("Cloudflare challenge detected. Attempting to solve...")
-            challenge_type = await self.determine_challenge_type(page)
-            if not challenge_type:
-                self.log_message("Could not determine challenge type")
-                return False
+            self.log_message("Cloudflare challenge detected. Waiting for resolution...")
+            clicked = False
+            for _ in range(self.max_retries):
+                if await self.is_bypassed(page):
+                    self.log_message("Cloudflare challenge solved successfully!")
+                    return ChallengeResult(True, cf_detected, status)
+                # non-interactive challenges auto-resolve; interactive ones need one click
+                if not clicked:
+                    clicked = await self._click_turnstile_checkbox(page)
+                await asyncio.sleep(RETRY_POLL_SECONDS)
 
-            # Use ClickSolver to find and click the Cloudflare checkbox.
-            # Don't pass expected_content_selector — it causes false negatives
-            # when the target page doesn't have a matching element.
-            captcha_container = page
-            try:
-                async with ClickSolver(framework=FrameworkType.CAMOUFOX, page=page, max_attempts=3, attempt_delay=3) as solver:
-                    await solver.solve_captcha(
-                        captcha_container=captcha_container,
-                        captcha_type=challenge_type)
-                    if await self.is_bypassed(page):
-                        self.log_message("Cloudflare challenge solved successfully!")
-                        return True
-            except Exception as e:
-                self.log_message(f"Click solver reported: {e}")
-
-            # The click solver's internal verification can be too hasty —
-            # the checkbox click may have worked but the page needs more
-            # time to navigate past the challenge. Poll for resolution.
-            self.log_message("Waiting for page to resolve after challenge interaction...")
-            for i in range(self.max_retries):
-                await asyncio.sleep(3)
-                try:
-                    if await self.is_bypassed(page):
-                        self.log_message("Cloudflare challenge resolved after waiting")
-                        return True
-                except Exception:
-                    # Page may be mid-navigation — keep polling
-                    pass
+            if await self.is_bypassed(page):
+                self.log_message("Cloudflare challenge solved successfully!")
+                return ChallengeResult(True, cf_detected, status)
 
             self.log_message("Failed to solve Cloudflare challenge")
-            return False
+            return ChallengeResult(False, cf_detected, status)
 
         except Exception as e:
             self.log_message(f"Error solving Cloudflare challenge: {e}")
-            return False
+            return ChallengeResult(False, cf_detected, status)
 
-    async def get_cookies_and_user_agent(self, context, page) -> Dict[str, Any]:
-        """Get cookies and user agent after successful bypass."""
+    async def get_cookies_and_user_agent(self, context, page) -> Optional[Dict[str, Any]]:
         try:
             cookies = await context.cookies()
-            cookie_dict = {}
-            for cookie in cookies:
-                cookie_dict[cookie['name']] = cookie['value']
-            
-            # Get user agent from the page
+            cookie_dict = {c["name"]: c["value"] for c in cookies}
             user_agent = await page.evaluate("navigator.userAgent")
-            
-            return {
-                "cookies": cookie_dict,
-                "user_agent": user_agent
-            }
+            return {"cookies": cookie_dict, "user_agent": user_agent}
         except Exception as e:
             self.log_message(f"Error getting cookies and user agent: {e}")
             return None
 
-    async def get_html_content_and_cookies(self, context, page) -> Dict[str, Any]:
-        """Get HTML content, cookies, and user agent after successful bypass."""
+    async def get_html_content_and_cookies(self, context, page, status_code: int = 200) -> Optional[Dict[str, Any]]:
         try:
             cookies = await context.cookies()
-            cookie_dict = {}
-            for cookie in cookies:
-                cookie_dict[cookie['name']] = cookie['value']
-            
-            # Get user agent from the page
+            cookie_dict = {c["name"]: c["value"] for c in cookies}
             user_agent = await page.evaluate("navigator.userAgent")
-            
-            # Get HTML content
-            html_content = await page.content()
-            
-            # Get final URL (in case of redirects)
-            final_url = page.url
-            
             return {
                 "cookies": cookie_dict,
                 "user_agent": user_agent,
-                "html": html_content,
-                "url": final_url,
-                "status_code": 200  # Assuming success if we got here
+                "html": await page.content(),
+                "url": page.url,
+                "status_code": status_code,
             }
         except Exception as e:
             self.log_message(f"Error getting HTML content and cookies: {e}")
             return None
 
-    async def get_or_generate_cookies(self, url: str, proxy: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        """Get cached cookies or generate new ones."""
-        hostname = urlparse(url).netloc
-        cache_key = md5_hash(hostname + (proxy or ""))
-        
-        # Try to get cached cookies first
-        cached = self.cookie_cache.get(cache_key)
-        if cached:
-            return {
-                "cookies": cached.cookies,
-                "user_agent": cached.user_agent
-            }
-        
-        self.log_message(f"No cached cookies for {cache_key}, generating new ones...")
-        
-        # Create isolated browser instance
-        camoufox = None
-        browser = None
-        context = None
-        page = None
-        
-        try:
-            # Setup browser and solve challenge
-            camoufox, browser, context, page = await self.setup_browser(proxy)
-            
-            if await self.solve_cloudflare_challenge(url, page):
-                data = await self.get_cookies_and_user_agent(context, page)
-                if data:
-                    # Cache the new cookies
-                    self.cookie_cache.set(cache_key, data["cookies"], data["user_agent"])
-                    return data
-            
-            return None
-            
-        except Exception as e:
-            self.log_message(f"Error in get_or_generate_cookies: {e}")
-            return None
-        finally:
-            await self.cleanup_browser(camoufox, browser, context, page)
+    @staticmethod
+    def _is_trustworthy(cookies: Dict[str, str], cf_detected: bool) -> bool:
+        """A CF-detected result is only trustworthy once a cf_clearance cookie exists."""
+        if not cf_detected:
+            return True
+        return bool(cookies.get("cf_clearance"))
 
-    async def get_or_generate_html(self, url: str, proxy: Optional[str] = None, bypass_cache: bool = False) -> Optional[Dict[str, Any]]:
-        """Get HTML content along with cookies (cached or fresh)."""
-        hostname = urlparse(url).netloc
-        cache_key = md5_hash(hostname + (proxy or ""))
-        
-        # For HTML endpoint, we need to setup browser and get fresh content
-        # even if we have cached cookies, as HTML content may change
-        self.log_message(f"Getting HTML content for {url}...")
-        
-        cached_cookies = None
+    async def _read_valid_cache(self, key: str, proxy: Optional[str]):
+        """Return a still-valid cache entry, or None — invalidating it if the proxy exit IP rotated."""
+        cached = self.cookie_cache.get(key)
+        if not cached:
+            return None
+        if IP_CHECK_ENABLED and cached.exit_ip:
+            current = await get_exit_ip(proxy)
+            if current and current != cached.exit_ip:
+                self.log_message(f"Proxy exit IP changed ({cached.exit_ip} -> {current}); invalidating cookies for {key}")
+                self.cookie_cache.invalidate(key)
+                return None
+        return cached
+
+    async def _run_in_browser(self, url, proxy, key, *, restore_cookies, extractor):
+        """Shared browser skeleton: launch, solve, extract, cache. Returns the extractor dict or None."""
         cached_ua = None
-        
-        if not bypass_cache:
-            cached = self.cookie_cache.get(cache_key)
+        cached_cookies = None
+        if restore_cookies:
+            cached = await self._read_valid_cache(key, proxy)
             if cached:
                 cached_cookies = cached.cookies
                 cached_ua = cached.user_agent
                 self.log_message(f"Found cached cookies for {url}")
 
-        # Create isolated browser instance
-        camoufox = None
-        browser = None
-        context = None
-        page = None
-        
-        try:
-            # Setup browser and solve challenge
-            camoufox, browser, context, page = await self.setup_browser(proxy, user_agent=cached_ua)
-            
-            if cached_cookies:
-                self.log_message("Restoring cached cookies...")
-                # Convert dict to list of cookie objects
-                cookie_list = []
-                for name, value in cached_cookies.items():
-                    cookie_list.append({
-                        'name': name,
-                        'value': value,
-                        'url': url  # Use the target URL for the cookie
-                    })
-                await context.add_cookies(cookie_list)
-            
-            if await self.solve_cloudflare_challenge(url, page):
-                data = await self.get_html_content_and_cookies(context, page)
-                if data:
-                    # Cache the cookies for future use
-                    self.cookie_cache.set(cache_key, data["cookies"], data["user_agent"])
-                    return data
-            
-            return None
-            
-        except Exception as e:
-            self.log_message(f"Error in get_or_generate_html: {e}")
-            return None
-        finally:
-            await self.cleanup_browser(camoufox, browser, context, page)
+        async with _browser_semaphore():
+            context = None
+            try:
+                context, page = await self.setup_browser(proxy, user_agent=cached_ua)
 
-    async def cleanup_browser(self, camoufox, browser, context, page) -> None:
-        """Clean up browser resources."""
-        try:
-            # Close page first
-            if page:
-                try:
-                    await page.close()
-                except Exception as e:
-                    self.log_message(f"Error closing page: {e}")
-                
-            # Close context second
-            if context:
-                try:
-                    await context.close()
-                except Exception as e:
-                    self.log_message(f"Error closing context: {e}")
-                
-            # Close the AsyncCamoufox wrapper
-            if camoufox:
-                try:
-                    await camoufox.__aexit__(None, None, None)
-                except Exception as e:
-                    self.log_message(f"Error closing camoufox: {e}")
-                    
-        except Exception as e:
-            self.log_message(f"Error during cleanup: {e}")
+                if cached_cookies:
+                    self.log_message("Restoring cached cookies...")
+                    cookie_list = [{"name": name, "value": value, "url": url} for name, value in cached_cookies.items()]
+                    await context.add_cookies(cookie_list)
+
+                result = await self.solve_cloudflare_challenge(url, page)
+                success, cf_detected, status = result
+                if success:
+                    data = await extractor(context, page, status)
+                    if data and self._is_trustworthy(data["cookies"], cf_detected):
+                        exit_ip = await get_exit_ip(proxy) if IP_CHECK_ENABLED else None
+                        self.cookie_cache.set(key, data["cookies"], data["user_agent"], exit_ip=exit_ip)
+                        return data
+                    if data:
+                        self.log_message("CF detected but no cf_clearance cookie -- not caching")
+                return None
+            except Exception as e:
+                self.log_message(f"Error running browser for {url}: {e}")
+                return None
+            finally:
+                await self.cleanup_browser(context)
+
+    async def get_or_generate_cookies(self, url: str, proxy: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Get cached cookies or generate new ones."""
+        hostname = urlparse(url).netloc
+        key = cache_key(hostname, proxy)
+
+        cached = await self._read_valid_cache(key, proxy)
+        if cached:
+            return {"cookies": cached.cookies, "user_agent": cached.user_agent}
+
+        async with _inflight_lock(key):
+            # another waiter may have populated the cache while we queued
+            cached = await self._read_valid_cache(key, proxy)
+            if cached:
+                return {"cookies": cached.cookies, "user_agent": cached.user_agent}
+
+            self.log_message(f"No cached cookies for {key}, generating new ones...")
+
+            async def extractor(context, page, status):
+                return await self.get_cookies_and_user_agent(context, page)
+
+            return await self._run_in_browser(url, proxy, key, restore_cookies=False, extractor=extractor)
+
+    async def get_or_generate_html(self, url: str, proxy: Optional[str] = None, bypass_cache: bool = False) -> Optional[Dict[str, Any]]:
+        """Get HTML content along with cookies (cached or fresh)."""
+        hostname = urlparse(url).netloc
+        key = cache_key(hostname, proxy)
+
+        self.log_message(f"Getting HTML content for {url}...")
+
+        # No in-flight lock here: HTML must be fetched fresh per request, so concurrent
+        # requests run in parallel (bounded by the semaphore) rather than serializing.
+        async def extractor(context, page, status):
+            return await self.get_html_content_and_cookies(context, page, status_code=status)
+
+        return await self._run_in_browser(url, proxy, key, restore_cookies=not bypass_cache, extractor=extractor)
+
+    async def refresh_cookies(self, url: str, proxy: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Force refresh cookies for a URL by invalidating cache and generating new ones."""
+        hostname = urlparse(url).netloc
+        key = cache_key(hostname, proxy)
+
+        async with _inflight_lock(key):
+            self.log_message(f"Invalidating cache for {hostname}...")
+            self.cookie_cache.invalidate(key)
+
+            self.log_message(f"Generating fresh cookies for {hostname}...")
+
+            async def extractor(context, page, status):
+                return await self.get_cookies_and_user_agent(context, page)
+
+            return await self._run_in_browser(url, proxy, key, restore_cookies=False, extractor=extractor)
+
+    async def cleanup_browser(self, context) -> None:
+        """Close the context (and its underlying browser). Never raises; never leaks."""
+        if context is not None:
+            try:
+                # shield+timeout so a hung close (or outer cancellation) can't
+                # leave the browser process running or block us forever
+                await asyncio.wait_for(asyncio.shield(context.close()), timeout=CONTEXT_CLOSE_TIMEOUT_SECONDS)
+            except Exception as e:
+                self.log_message(f"Error closing context: {e}")
 
     async def cleanup(self) -> None:
         """Backward compatibility method - no longer stores browser instances."""
         pass
-
-    async def refresh_cookies(self, url: str, proxy: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        """
-        Force refresh cookies for a URL by invalidating cache and generating new ones.
-        
-        Args:
-            url: Target URL to refresh cookies for
-            proxy: Optional proxy URL
-            
-        Returns:
-            Dictionary with new cookies and user agent, or None if refresh failed
-        """
-        hostname = urlparse(url).netloc
-        cache_key = md5_hash(hostname + (proxy or ""))
-        
-        # Invalidate the cache entry
-        self.log_message(f"Invalidating cache for {hostname}...")
-        self.cookie_cache.invalidate(cache_key)
-        
-        # Generate new cookies
-        self.log_message(f"Generating fresh cookies for {hostname}...")
-        return await self.get_or_generate_cookies(url, proxy)
