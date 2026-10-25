@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from datetime import datetime
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -179,12 +180,13 @@ class CFBypasser:
             if cached:
                 return {"cookies": cached.cookies, "user_agent": cached.user_agent}
 
+        requested_at = datetime.now()
         async with _inflight_lock(key):
-            # another waiter may have populated the cache while we queued
-            if not bypass_cache:
-                cached = await self._read_valid_cache(key, proxy)
-                if cached:
-                    return {"cookies": cached.cookies, "user_agent": cached.user_agent}
+            # another waiter may have populated the cache while we queued; with bypass_cache,
+            # only cookies generated after this request arrived count as fresh
+            cached = await self._read_valid_cache(key, proxy)
+            if cached and (not bypass_cache or cached.timestamp >= requested_at):
+                return {"cookies": cached.cookies, "user_agent": cached.user_agent}
 
             self.log_message(f"Generating fresh cookies for {key}...")
             return await self._run_in_browser(url, proxy, key, restore_cookies=False, mode="cookies")

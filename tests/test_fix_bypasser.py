@@ -318,6 +318,17 @@ async def test_bypass_cache_forces_fresh_cookies(tmp_path, monkeypatch):
     await b.cleanup()
 
 
+async def test_concurrent_bypass_cache_shares_one_fresh_solve(tmp_path, monkeypatch):
+    b = make_bypasser(tmp_path)
+    await b.start()
+    calls = []
+    monkeypatch.setattr(CFBypasser, "_job", fake_job({"s": "1"}, delay=0.05, tracker=calls))
+    results = await asyncio.gather(*(b.get_or_generate_cookies("https://same.com", bypass_cache=True) for _ in range(5)))
+    assert all(results)
+    assert len(calls) == 1  # waiters reuse the solve that finished after they asked
+    await b.cleanup()
+
+
 async def test_inflight_dedup(tmp_path, monkeypatch):
     b = make_bypasser(tmp_path)
     await b.start()
