@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 
 from curl_cffi.requests import AsyncSession
 
-from cf_bypasser.core.bypasser import CloakBypasser
+from cf_bypasser.core.bypasser import CFBypasser
 from cf_bypasser.utils.config import BrowserConfig
 from cf_bypasser.utils.misc import cache_key
 from cf_bypasser.utils.constants import (
@@ -22,8 +22,8 @@ from cf_bypasser.utils.constants import (
 class RequestMirror:
     """Handles dynamic request mirroring with Cloudflare bypass."""
 
-    def __init__(self, bypasser: Optional[CloakBypasser] = None):
-        self.bypasser: CloakBypasser = bypasser or CloakBypasser()
+    def __init__(self, bypasser: Optional[CFBypasser] = None):
+        self.bypasser: CFBypasser = bypasser or CFBypasser()
         self.session_cache: "OrderedDict[str, AsyncSession]" = OrderedDict()  # LRU per host:proxy
         self.max_sessions: int = int(os.environ.get("CF_MAX_SESSIONS", str(MAX_SESSIONS)))
 
@@ -86,7 +86,7 @@ class RequestMirror:
             proxy_dict = {"http": proxy, "https": proxy}
 
         session = AsyncSession(
-            impersonate="chrome",  # match CloakBrowser's Chrome fingerprint
+            impersonate="chrome",  # match the pooled Chrome's fingerprint
             proxies=proxy_dict,
             timeout=SESSION_TIMEOUT_SECONDS
         )

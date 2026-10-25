@@ -9,7 +9,7 @@ from .routes import setup_routes, lifespan
 def create_app() -> FastAPI:
     app = FastAPI(
         title="Cloudflare Bypasser",
-        description="CloakBrowser-based Cloudflare bypasser with request mirroring",
+        description="DrissionPage-based Cloudflare bypasser with request mirroring",
         version=APP_VERSION,
         lifespan=lifespan
     )

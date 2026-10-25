@@ -25,13 +25,3 @@ def per_loop(registry: dict, factory):
         value = factory()
         registry[loop] = value
     return value
-
-
-# One browser-init lock per event loop. Keyed by loop so the multi-loop pytest
-# harness gets correct mutual exclusion, while production (single loop) shares one.
-_browser_init_locks: dict = {}
-
-
-def get_browser_init_lock() -> asyncio.Lock:
-    """Global lock serializing browser launches for the current event loop."""
-    return per_loop(_browser_init_locks, asyncio.Lock)

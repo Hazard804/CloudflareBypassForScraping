@@ -1,4 +1,4 @@
-from .bypasser import CloakBypasser
+from .bypasser import CFBypasser
 from .mirror import RequestMirror
 
-__all__ = ["CloakBypasser", "RequestMirror"]
+__all__ = ["CFBypasser", "RequestMirror"]

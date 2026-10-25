@@ -49,9 +49,11 @@ def client():
 
 @pytest_asyncio.fixture
 async def bypasser():
-    """Create a CloakBypasser instance for testing."""
-    from cf_bypasser.core.bypasser import CloakBypasser
-    instance = CloakBypasser(max_retries=5, log=True)
+    """Started CFBypasser backed by a real browser pool of one."""
+    from cf_bypasser.browser.pool import BrowserPool
+    from cf_bypasser.core.bypasser import CFBypasser
+    instance = CFBypasser(log=True, pool=BrowserPool(1))
+    await instance.start()
     yield instance
     await instance.cleanup()
 
@@ -60,8 +62,10 @@ async def bypasser():
 # suite launches a browser once instead of per test.
 @pytest_asyncio.fixture(scope="session", loop_scope="session")
 async def shared_cookies():
-    from cf_bypasser.core.bypasser import CloakBypasser
-    instance = CloakBypasser(max_retries=5, log=True)
+    from cf_bypasser.browser.pool import BrowserPool
+    from cf_bypasser.core.bypasser import CFBypasser
+    instance = CFBypasser(log=True, pool=BrowserPool(1))
+    await instance.start()
     try:
         return await instance.get_or_generate_cookies(TEST_URL)
     finally:
@@ -70,8 +74,10 @@ async def shared_cookies():
 
 @pytest_asyncio.fixture(scope="session", loop_scope="session")
 async def shared_html():
-    from cf_bypasser.core.bypasser import CloakBypasser
-    instance = CloakBypasser(max_retries=5, log=True)
+    from cf_bypasser.browser.pool import BrowserPool
+    from cf_bypasser.core.bypasser import CFBypasser
+    instance = CFBypasser(log=True, pool=BrowserPool(1))
+    await instance.start()
     try:
         return await instance.get_or_generate_html(TEST_URL)
     finally:

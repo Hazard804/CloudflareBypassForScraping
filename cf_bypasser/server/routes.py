@@ -6,7 +6,7 @@ from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, Request, Response, Query, Depends
 
-from cf_bypasser.core.bypasser import CloakBypasser
+from cf_bypasser.core.bypasser import CFBypasser
 from cf_bypasser.core.mirror import RequestMirror
 from cf_bypasser.server.models import (
     CookieResponse, CacheStatsResponse, CacheClearResponse, ErrorResponse,
@@ -27,7 +27,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     logger.info("Starting Cloudflare Bypasser Server...")
 
-    global_bypasser = CloakBypasser(max_retries=5, log=True)
+    global_bypasser = CFBypasser(log=True)
     global_mirror = RequestMirror(global_bypasser)
 
     logger.info("Server initialization complete")
@@ -48,7 +48,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Server shutdown complete")
 
 
-def get_bypasser() -> CloakBypasser:
+def get_bypasser() -> CFBypasser:
     """DI provider for the lifespan-created bypasser singleton."""
     return global_bypasser
 
@@ -93,7 +93,7 @@ def setup_routes(app: FastAPI):
         url: Optional[str] = Query(None, description="Target URL to get cookies for"),
         retries: int = Query(5, ge=1, le=10, description="Number of retry attempts"),
         proxy: Optional[str] = Query(None, description="Proxy URL (optional)"),
-        bypasser: CloakBypasser = Depends(get_bypasser),
+        bypasser: CFBypasser = Depends(get_bypasser),
     ):
         """Legacy endpoint: get Cloudflare clearance cookies, or mirror when x-hostname is present."""
         if _validate_request(request, url, proxy):
@@ -132,7 +132,7 @@ def setup_routes(app: FastAPI):
         retries: int = Query(5, ge=1, le=10, description="Number of retry attempts"),
         proxy: Optional[str] = Query(None, description="Proxy URL (optional)"),
         bypassCookieCache: bool = Query(False, description="Force fresh cookie generation"),
-        bypasser: CloakBypasser = Depends(get_bypasser),
+        bypasser: CFBypasser = Depends(get_bypasser),
     ):
         """Get raw HTML from a URL after bypassing Cloudflare, or mirror when x-hostname is present."""
         if _validate_request(request, url, proxy):
@@ -173,7 +173,7 @@ def setup_routes(app: FastAPI):
 
     @app.post("/cache/clear", response_model=CacheClearResponse, responses={500: {"model": ErrorResponse}})
     async def clear_cache(
-        bypasser: CloakBypasser = Depends(get_bypasser),
+        bypasser: CFBypasser = Depends(get_bypasser),
         mirror: RequestMirror = Depends(get_mirror),
     ):
         """Clear the cookie cache and cleanup active sessions."""
@@ -199,7 +199,7 @@ def setup_routes(app: FastAPI):
             raise HTTPException(status_code=500, detail="Internal server error")
 
     @app.get("/cache/stats", response_model=CacheStatsResponse, responses={500: {"model": ErrorResponse}})
-    async def cache_stats(bypasser: CloakBypasser = Depends(get_bypasser)):
+    async def cache_stats(bypasser: CFBypasser = Depends(get_bypasser)):
         """Get detailed cache statistics including active entries and hostnames."""
         try:
             if not bypasser:
