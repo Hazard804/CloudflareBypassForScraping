@@ -82,3 +82,26 @@ async def shared_html():
         return await instance.get_or_generate_html(TEST_URL)
     finally:
         await instance.cleanup()
+
+
+class _FakeStates:
+    is_alive = True
+
+
+class _FakeBrowser:
+    process_id = None
+
+    def __init__(self, *a, **k):
+        self.states = _FakeStates()
+
+    def quit(self, *a, **k):
+        self.states = type("S", (), {"is_alive": False})()
+
+
+@pytest.fixture(autouse=True)
+def _no_real_browsers(request, monkeypatch):
+    """Only tests marked live may launch a real browser."""
+    if request.node.get_closest_marker("live"):
+        return
+    import cf_bypasser.browser.pool as pool_mod
+    monkeypatch.setattr(pool_mod, "launch_chromium", _FakeBrowser)

@@ -12,9 +12,16 @@ from DrissionPage import Chromium, ChromiumOptions
 from cf_bypasser.utils.constants import (
     BROWSER_COUNT,
     BROWSER_MAX_JOBS,
-    CHROME_NO_SANDBOX,
-    CHROME_PATH,
+    BROWSER_NO_SANDBOX,
+    BROWSER_PATH,
     HEADLESS,
+)
+
+_BRAVE_CANDIDATES = (
+    "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+    "/usr/bin/brave-browser",
+    "/usr/bin/brave-browser-stable",
+    "/opt/brave.com/brave/brave",
 )
 
 _RELAUNCH_BACKOFF_SECONDS = (1, 2, 4, 8, 16, 30)
@@ -26,25 +33,35 @@ _launch_lock = threading.Lock()
 _headless_ua: Optional[str] = None
 
 
-def launch_chromium(headless: bool = HEADLESS, chrome_path: Optional[str] = CHROME_PATH) -> Chromium:
+def find_brave(explicit: Optional[str] = BROWSER_PATH) -> str:
+    if explicit:
+        if not os.path.exists(explicit):
+            raise FileNotFoundError(f"CF_BROWSER_PATH does not exist: {explicit}")
+        return explicit
+    for path in _BRAVE_CANDIDATES:
+        if os.path.exists(path):
+            return path
+    raise FileNotFoundError("Brave browser not found; install it or set CF_BROWSER_PATH")
+
+
+def launch_chromium(headless: bool = HEADLESS, browser_path: Optional[str] = None) -> Chromium:
     global _headless_ua
-    browser = _launch(headless, chrome_path, _headless_ua if headless else None)
+    browser_path = browser_path or find_brave()
+    browser = _launch(headless, browser_path, _headless_ua if headless else None)
     if headless and _headless_ua is None:
         ua = browser._run_cdp("Browser.getVersion")["userAgent"]
         if "HeadlessChrome" in ua:
             # set at launch so it covers every target, incl. the cross-origin Turnstile iframe
             _headless_ua = ua.replace("HeadlessChrome", "Chrome")
             _quit_browser(browser)
-            browser = _launch(headless, chrome_path, _headless_ua)
+            browser = _launch(headless, browser_path, _headless_ua)
     return browser
 
 
-def _launch(headless: bool, chrome_path: Optional[str], user_agent: Optional[str]) -> Chromium:
-    co = ChromiumOptions(read_file=False).auto_port().headless(headless)
+def _launch(headless: bool, browser_path: str, user_agent: Optional[str]) -> Chromium:
+    co = ChromiumOptions(read_file=False).auto_port().headless(headless).set_browser_path(browser_path)
     if user_agent:
         co.set_user_agent(user_agent)
-    if chrome_path:
-        co.set_browser_path(chrome_path)
     for arg in (
         "--no-first-run",
         "--no-default-browser-check",
@@ -53,7 +70,7 @@ def _launch(headless: bool, chrome_path: Optional[str], user_agent: Optional[str
         "--accept-lang=en-US",
     ):
         co.set_argument(arg)
-    if CHROME_NO_SANDBOX or (hasattr(os, "geteuid") and os.geteuid() == 0):
+    if BROWSER_NO_SANDBOX or (hasattr(os, "geteuid") and os.geteuid() == 0):
         co.set_argument("--no-sandbox")
     with _launch_lock:
         return Chromium(co)
@@ -64,8 +81,9 @@ def _kill_tree(pid: Optional[int]) -> None:
         return
     try:
         proc = psutil.Process(pid)
-        # the pid may have been reused after Chrome exited; only ever kill a browser
-        if "chrom" not in proc.name().lower():
+        # the pid may have been reused after the browser exited; only ever kill a browser
+        name = proc.name().lower()
+        if "brave" not in name and "chrom" not in name:
             return
         procs = proc.children(recursive=True) + [proc]
     except psutil.Error:

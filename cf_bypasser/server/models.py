@@ -40,6 +40,21 @@ class CacheClearResponse(BaseModel):
     message: str = Field(..., description="Operation message")
 
 
+class BrowserInfo(BaseModel):
+    index: int = Field(..., description="Browser slot index")
+    state: str = Field(..., description="idle, busy or restarting")
+    jobs: int = Field(..., description="Jobs served since the last (re)launch")
+    pid: Optional[int] = Field(None, description="Browser process id (null while restarting)")
+
+
+class BrowserPoolResponse(BaseModel):
+    total: int = Field(..., description="Configured number of browsers")
+    available: int = Field(..., description="Idle browsers ready for a request")
+    busy: int = Field(..., description="Browsers currently serving a request")
+    restarting: int = Field(..., description="Browsers being relaunched")
+    browsers: List[BrowserInfo] = Field(..., description="Per-browser state")
+
+
 class ErrorResponse(BaseModel):
     detail: str = Field(..., description="Error message")
     error_code: Optional[str] = Field(None, description="Error code")

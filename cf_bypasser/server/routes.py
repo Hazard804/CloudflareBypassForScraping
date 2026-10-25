@@ -9,7 +9,7 @@ from fastapi import FastAPI, HTTPException, Request, Response, Query, Depends
 from cf_bypasser.core.bypasser import CFBypasser
 from cf_bypasser.core.mirror import RequestMirror
 from cf_bypasser.server.models import (
-    CookieResponse, CacheStatsResponse, CacheClearResponse, ErrorResponse,
+    BrowserPoolResponse, CookieResponse, CacheStatsResponse, CacheClearResponse, ErrorResponse,
 )
 from cf_bypasser.utils.constants import APP_VERSION, PROXY_SCHEMES, CF_COOKIE_PREFIXES
 from cf_bypasser.utils.security import is_safe_url
@@ -28,6 +28,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Starting Cloudflare Bypasser Server...")
 
     global_bypasser = CFBypasser(log=True)
+    await global_bypasser.start()
     global_mirror = RequestMirror(global_bypasser)
 
     logger.info("Server initialization complete")
@@ -224,6 +225,11 @@ def setup_routes(app: FastAPI):
             logger.error(f"Error getting cache stats: {e}")
             raise HTTPException(status_code=500, detail="Internal server error")
 
+    @app.get("/browsers", response_model=BrowserPoolResponse, responses={500: {"model": ErrorResponse}})
+    async def browsers(bypasser: CFBypasser = Depends(get_bypasser)):
+        """Pool status: how many browsers are available, busy or restarting (per worker)."""
+        return BrowserPoolResponse(**bypasser.pool.stats())
+
     @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
     async def mirror_request(
         request: Request,
@@ -232,7 +238,7 @@ def setup_routes(app: FastAPI):
     ):
         """Dynamic request mirroring endpoint keyed off the x-hostname header."""
 
-        if path.startswith("cache/"):
+        if path.startswith(("cache/", "browsers/")):
             raise HTTPException(status_code=404, detail="Not found")
 
         try:

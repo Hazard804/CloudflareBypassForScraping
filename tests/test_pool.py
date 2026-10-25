@@ -173,3 +173,36 @@ def test_kill_tree_ignores_non_browser_pid():
     from cf_bypasser.browser.pool import _kill_tree
     _kill_tree(os.getpid())  # pytest's own process: must survive
     assert True
+
+
+def test_find_brave_explicit_path(tmp_path):
+    from cf_bypasser.browser.pool import find_brave
+    exe = tmp_path / "brave"
+    exe.write_text("")
+    assert find_brave(str(exe)) == str(exe)
+
+
+def test_find_brave_missing_explicit_path_fails_loudly(tmp_path):
+    from cf_bypasser.browser.pool import find_brave
+    with pytest.raises(FileNotFoundError):
+        find_brave(str(tmp_path / "nope"))
+
+
+def test_find_brave_autodetects(monkeypatch, tmp_path):
+    import cf_bypasser.browser.pool as pool_mod
+    exe = tmp_path / "brave-browser"
+    exe.write_text("")
+    monkeypatch.setattr(pool_mod, "_BRAVE_CANDIDATES", (str(tmp_path / "missing"), str(exe)))
+    assert pool_mod.find_brave(None) == str(exe)
+
+
+def test_find_brave_none_installed(monkeypatch, tmp_path):
+    import cf_bypasser.browser.pool as pool_mod
+    monkeypatch.setattr(pool_mod, "_BRAVE_CANDIDATES", (str(tmp_path / "missing"),))
+    with pytest.raises(FileNotFoundError, match="Brave"):
+        pool_mod.find_brave(None)
+
+
+def test_non_live_tests_cannot_launch_real_browsers():
+    import cf_bypasser.browser.pool as pool_mod
+    assert pool_mod.launch_chromium.__name__ == "_FakeBrowser"
