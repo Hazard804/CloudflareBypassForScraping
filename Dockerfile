@@ -39,8 +39,7 @@ COPY cf_bypasser cf_bypasser
 COPY server.py healthcheck.py ./
 # the cookie cache file is written next to the app
 RUN chown -R app:app /app
-ENV CF_BROWSER_PATH=/opt/brave.com/brave/brave CF_HEADLESS=true CF_BROWSER_NO_SANDBOX=true CF_BROWSERS=3 PORT=8000 \
-    CF_BLOCK_BRAVE_HOSTS=true
+ENV CF_BROWSER_PATH=/opt/brave.com/brave/brave CF_HEADLESS=true CF_BROWSER_NO_SANDBOX=true CF_BROWSERS=3 PORT=8000
 USER app
 EXPOSE 8000
 

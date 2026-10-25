@@ -48,8 +48,9 @@ A rotating residential proxy can change its exit IP unexpectedly, which invalida
 | `CF_LOCALE` | `en-US` | Browser language (`--lang`/`Accept-Language`) and the `Accept-Language` sent by request mirroring. Match it to your proxy's region. |
 | `CF_FETCH_MAX_BYTES` | `52428800` | Largest response `/fetch` returns (50 MB). |
 | `CF_BROWSER_NO_SANDBOX` | `false` (`true` in Docker) | Pass `--no-sandbox`; needed inside containers under Docker's default seccomp profile. Applied automatically when running as root. The browser loads URLs your clients choose, so treat the container as untrusted: it runs as a non-root user and holds no secrets, and you can re-enable the sandbox by running with a seccomp profile that allows user namespaces and setting this to `false`. |
-| `CF_BLOCK_BRAVE_HOSTS` | `false` (`true` in Docker) | Make `brave.com`, `bravesoftware.com`, `brave.software` and their subdomains unresolvable in the browser and refuse them in the proxy relay. Brave's telemetry/update pings can't be disabled otherwise. Turn it off only if you need to scrape Brave's own sites. |
 | `PORT` | `8000` | Port the server listens on (same as `--port`); the Docker healthcheck follows it. |
+
+Brave's own telemetry/update hosts (`brave.com`, `bravesoftware.com`, `brave.software` and their subdomains) are always blocked: unresolvable in the browser and refused by the proxy relay. Brave's telemetry can't be disabled any other way. As a consequence, Brave's own websites can't be scraped.
 
 ## Proxies
 

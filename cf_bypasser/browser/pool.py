@@ -16,7 +16,6 @@ from DrissionPage import Chromium, ChromiumOptions
 from cf_bypasser.utils.constants import (
     BROWSER_COUNT,
     BROWSER_MAX_JOBS,
-    BLOCK_BRAVE_HOSTS,
     BRAVE_DOMAINS,
     BROWSER_NO_SANDBOX,
     BROWSER_PATH,
@@ -66,8 +65,10 @@ def launch_chromium(headless: bool = HEADLESS, browser_path: Optional[str] = Non
     return browser
 
 
-def browser_args(locale: str, block_brave: bool = BLOCK_BRAVE_HOSTS) -> List[str]:
-    args = [
+def browser_args(locale: str) -> List[str]:
+    # Brave's telemetry can't be switched off; make its hosts unresolvable instead
+    rules = ", ".join(f"MAP {h} ~NOTFOUND" for d in BRAVE_DOMAINS for h in (d, f"*.{d}"))
+    return [
         "--no-first-run",
         "--no-default-browser-check",
         "--disable-dev-shm-usage",
@@ -76,12 +77,8 @@ def browser_args(locale: str, block_brave: bool = BLOCK_BRAVE_HOSTS) -> List[str
         f"--lang={locale}",
         # plain list: the browser adds the q= weights itself
         f"--accept-lang={accept_language(locale).replace(';q=0.9', '')}",
+        f"--host-resolver-rules={rules}",
     ]
-    if block_brave:
-        # Brave's telemetry can't be switched off; make its hosts unresolvable instead
-        rules = ", ".join(f"MAP {h} ~NOTFOUND" for d in BRAVE_DOMAINS for h in (d, f"*.{d}"))
-        args.append(f"--host-resolver-rules={rules}")
-    return args
 
 
 def _free_port() -> int:

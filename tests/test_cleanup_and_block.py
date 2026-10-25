@@ -59,13 +59,29 @@ def test_failed_cookie_clear_marks_browser_dirty():
     assert b._cfb_dirty is True
 
 
-def test_brave_hosts_blocked_by_resolver_rules():
+def test_brave_hosts_always_blocked_by_resolver_rules():
     from cf_bypasser.browser.pool import browser_args
-    rules = [a for a in browser_args("en-US", block_brave=True) if a.startswith("--host-resolver-rules=")]
+    rules = [a for a in browser_args("en-US") if a.startswith("--host-resolver-rules=")]
     assert len(rules) == 1
     for host in ("brave.com", "*.brave.com", "*.bravesoftware.com", "*.brave.software"):
         assert f"MAP {host} ~NOTFOUND" in rules[0]
-    assert not any(a.startswith("--host-resolver-rules=") for a in browser_args("en-US", block_brave=False))
+
+
+def test_brave_blocking_is_not_configurable(monkeypatch):
+    import importlib
+    import cf_bypasser.browser.pool as pool_mod
+    import cf_bypasser.browser.relay as relay_mod
+    import cf_bypasser.utils.constants as c
+    monkeypatch.setenv("CF_BLOCK_BRAVE_HOSTS", "false")
+    try:
+        importlib.reload(c)
+        importlib.reload(relay_mod)
+        assert relay_mod.BLOCKED_DOMAINS == c.BRAVE_DOMAINS
+        assert any(a.startswith("--host-resolver-rules=") for a in pool_mod.browser_args("en-US"))
+    finally:
+        monkeypatch.undo()
+        importlib.reload(c)
+        importlib.reload(relay_mod)
 
 
 @pytest.mark.parametrize("host,blocked", [
@@ -81,7 +97,6 @@ def test_relay_blocklist_matching(host, blocked):
 @pytest.mark.asyncio(loop_scope="function")
 async def test_relay_refuses_blocked_host(monkeypatch):
     import cf_bypasser.browser.relay as relay_mod
-    monkeypatch.setattr(relay_mod, "BLOCKED_DOMAINS", ("brave.com",))
     opened = []
 
     async def never(*a, **k):

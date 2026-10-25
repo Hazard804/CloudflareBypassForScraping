@@ -7,10 +7,10 @@ from urllib.parse import unquote, urlsplit
 
 from python_socks.async_.asyncio import Proxy
 
-from cf_bypasser.utils.constants import BLOCK_BRAVE_HOSTS, BRAVE_DOMAINS
+from cf_bypasser.utils.constants import BRAVE_DOMAINS
 
 # with a proxy, Chrome sends hostnames to the proxy and skips --host-resolver-rules, so block here too
-BLOCKED_DOMAINS = BRAVE_DOMAINS if BLOCK_BRAVE_HOSTS else ()
+BLOCKED_DOMAINS = BRAVE_DOMAINS
 
 _HEAD_LIMIT = 64 * 1024
 _CONNECT_TIMEOUT_SECONDS = 20
