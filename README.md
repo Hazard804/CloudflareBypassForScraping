@@ -84,7 +84,7 @@ curl "http://localhost:8000/api/data" -H "x-hostname: cf-protected-website.com"
 
 # How it works
 
-Two ways to get past Cloudflare, both powered by a real stealth browser (a patched Chromium via CloakBrowser).
+Two ways to get past Cloudflare, both powered by a pool of real Brave browsers driven by DrissionPage and reused across requests.
 
 ## 🍪 Cookie generation — `/cookies`
 

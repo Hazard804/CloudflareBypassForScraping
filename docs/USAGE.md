@@ -17,18 +17,29 @@ docker run -p 8000:8000 ghcr.io/sarperavci/cloudflarebypassforscraping:latest
 ```
 
 ### Manual
+Requires the [Brave browser](https://brave.com/linux/).
 ```bash
 pip install -r server_requirements.txt
-python server.py
+python server.py --browsers 3
 ```
 
-`server.py` accepts `--host`, `--port`, `--workers`, and `--log-level`.
+`server.py` accepts `--host`, `--port`, `--workers`, `--log-level`, `--browsers` (reused browsers per worker, default 3) and `--headless`. The Docker image runs Brave headless; arguments pass through, e.g. `docker run -p 8000:8000 IMAGE --browsers 5`.
 
 ### Build from source
 ```bash
 docker build -t cloudflare-bypass .
 docker run -p 8000:8000 cloudflare-bypass
 ```
+
+## Browser pool status
+
+```bash
+$ curl http://localhost:8000/browsers
+{"total":3,"available":2,"busy":1,"restarting":0,
+ "browsers":[{"index":0,"state":"busy","jobs":12,"pid":4211}, ...]}
+```
+
+Counts are per worker process when running with `--workers > 1`.
 
 ## Request mirroring (any HTTP method)
 

@@ -22,20 +22,28 @@ A rotating residential proxy can change its exit IP unexpectedly, which invalida
 
 | Variable | Default | Description |
 |---|---|---|
-| `CF_MAX_CONCURRENT_BROWSERS` | `4` | Maximum number of stealth-browser contexts launched at the same time. Caps memory/CPU under load; extra requests queue. |
+| `CF_BROWSERS` | `3` | Number of Brave processes kept running and reused (per worker). Each request borrows one; extra requests queue. Same as `server.py --browsers N`. |
+| `CF_BROWSER_MAX_JOBS` | `200` | A browser is restarted after serving this many requests, to keep memory in check. |
+| `CF_JOB_TIMEOUT` | `90` | Seconds one request may hold a browser. On timeout the browser is killed and relaunched. |
+| `CF_CHALLENGE_TIMEOUT` | `30` | Seconds to keep polling/clicking the Turnstile checkbox before giving up. |
 | `CF_MAX_SESSIONS` | `128` | Maximum number of cached `curl_cffi` mirror sessions (LRU, one per `hostname:proxy`). The least-recently-used session is closed and evicted past this limit. |
 
-## Browser engine (CloakBrowser)
+## Browser (Brave via DrissionPage)
 
 | Variable | Default | Description |
 |---|---|---|
-| `CLOAKBROWSER_AUTO_UPDATE` | `false` | Set to `false` by the app so it does not check PyPI for a newer Chromium build on every launch. The bundled CloakBrowser library also reads `CLOAKBROWSER_BINARY_PATH`, `CLOAKBROWSER_CACHE_DIR`, and `CLOAKBROWSER_DOWNLOAD_URL` — see the CloakBrowser docs. |
+| `CF_BROWSER_PATH` | auto-detect | Path to the Brave executable. When unset, the standard macOS/Linux install locations are tried; startup fails if Brave isn't found. |
+| `CF_HEADLESS` | `false` (`true` in Docker) | Run Brave headless. Same as `server.py --headless`. |
+| `CF_BROWSER_NO_SANDBOX` | `false` (`true` in Docker) | Pass `--no-sandbox`; needed inside containers. Applied automatically when running as root. |
+
+## Proxies
+
+Every request runs in its own disposable browser context, so each request can use a different proxy (`proxy=` query param or `x-proxy` header) without restarting the browser. Plain `http://host:port` proxies are handed to the browser directly; proxies with credentials (`http://user:pass@host:port`) and SOCKS proxies go through a small relay on `127.0.0.1`, because the browser can't authenticate per-context proxies itself. A request with an invalid or unreachable proxy fails; it never falls back to a direct connection.
 
 ## Example
 
 ```bash
 export CF_COOKIE_TTL_MINUTES=20
 export CF_IP_CHECK_ENABLED=true
-export CF_MAX_CONCURRENT_BROWSERS=8
-python server.py
+python server.py --browsers 8
 ```
