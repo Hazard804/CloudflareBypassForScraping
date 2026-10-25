@@ -23,8 +23,26 @@ _RELAUNCH_BACKOFF_SECONDS = (1, 2, 4, 8, 16, 30)
 _launch_lock = threading.Lock()
 
 
+_headless_ua: Optional[str] = None
+
+
 def launch_chromium(headless: bool = HEADLESS, chrome_path: Optional[str] = CHROME_PATH) -> Chromium:
+    global _headless_ua
+    browser = _launch(headless, chrome_path, _headless_ua if headless else None)
+    if headless and _headless_ua is None:
+        ua = browser._run_cdp("Browser.getVersion")["userAgent"]
+        if "HeadlessChrome" in ua:
+            # set at launch so it covers every target, incl. the cross-origin Turnstile iframe
+            _headless_ua = ua.replace("HeadlessChrome", "Chrome")
+            _quit_browser(browser)
+            browser = _launch(headless, chrome_path, _headless_ua)
+    return browser
+
+
+def _launch(headless: bool, chrome_path: Optional[str], user_agent: Optional[str]) -> Chromium:
     co = ChromiumOptions(read_file=False).auto_port().headless(headless)
+    if user_agent:
+        co.set_user_agent(user_agent)
     if chrome_path:
         co.set_browser_path(chrome_path)
     for arg in (
