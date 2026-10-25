@@ -6,12 +6,12 @@ pytestmark = pytest.mark.live
 
 
 @pytest.mark.asyncio
-async def test_mirror_get_request(server_url, expected_text):
+async def test_mirror_get_request(server_url, expected_text, test_host):
     """Test mirroring a simple GET request."""
     async with httpx.AsyncClient() as client:
         response = await client.get(
             f"{server_url}/",
-            headers={"x-hostname": "challenge.sarper.me"},
+            headers={"x-hostname": test_host},
             timeout=60.0
         )
 
@@ -23,12 +23,12 @@ async def test_mirror_get_request(server_url, expected_text):
 
 
 @pytest.mark.asyncio
-async def test_mirror_get_with_path(server_url):
+async def test_mirror_get_with_path(server_url, test_host):
     """Test mirroring a GET request with a path."""
     async with httpx.AsyncClient() as client:
         response = await client.get(
             f"{server_url}/test-path",
-            headers={"x-hostname": "challenge.sarper.me"},
+            headers={"x-hostname": test_host},
             timeout=60.0
         )
 
@@ -36,7 +36,7 @@ async def test_mirror_get_with_path(server_url):
 
 
 @pytest.mark.asyncio
-async def test_mirror_missing_hostname(server_url):
+async def test_mirror_missing_hostname(server_url, test_host):
     """Test mirror request without required x-hostname header."""
     async with httpx.AsyncClient() as client:
         response = await client.get(f"{server_url}/test", timeout=10.0)
@@ -44,7 +44,7 @@ async def test_mirror_missing_hostname(server_url):
 
 
 @pytest.mark.asyncio
-async def test_mirror_invalid_hostname(server_url):
+async def test_mirror_invalid_hostname(server_url, test_host):
     """Test mirror request with invalid hostname."""
     async with httpx.AsyncClient() as client:
         response = await client.get(
@@ -57,12 +57,12 @@ async def test_mirror_invalid_hostname(server_url):
 
 
 @pytest.mark.asyncio
-async def test_mirror_with_query_params(server_url):
+async def test_mirror_with_query_params(server_url, test_host):
     """Test mirroring a request with query parameters."""
     async with httpx.AsyncClient() as client:
         response = await client.get(
             f"{server_url}/?param1=value1&param2=value2",
-            headers={"x-hostname": "challenge.sarper.me"},
+            headers={"x-hostname": test_host},
             timeout=60.0
         )
 
@@ -71,13 +71,13 @@ async def test_mirror_with_query_params(server_url):
 
 @pytest.mark.parametrize("n", [3, 6])
 @pytest.mark.asyncio
-async def test_mirror_parallel_requests(server_url, expected_text, n):
+async def test_mirror_parallel_requests(server_url, expected_text, n, test_host):
     """Test N parallel mirror requests."""
     async with httpx.AsyncClient() as client:
         tasks = [
             client.get(
                 f"{server_url}/",
-                headers={"x-hostname": "challenge.sarper.me"},
+                headers={"x-hostname": test_host},
                 timeout=60.0
             )
             for _ in range(n)
@@ -92,18 +92,18 @@ async def test_mirror_parallel_requests(server_url, expected_text, n):
 
 
 @pytest.mark.asyncio
-async def test_mirror_different_methods(server_url):
+async def test_mirror_different_methods(server_url, test_host):
     """Test mirror with different HTTP methods."""
     async with httpx.AsyncClient() as client:
         response_get = await client.get(
             f"{server_url}/api/test",
-            headers={"x-hostname": "challenge.sarper.me"},
+            headers={"x-hostname": test_host},
             timeout=60.0
         )
 
         response_post = await client.post(
             f"{server_url}/api/test",
-            headers={"x-hostname": "challenge.sarper.me"},
+            headers={"x-hostname": test_host},
             json={"test": "data"},
             timeout=60.0
         )
@@ -113,13 +113,13 @@ async def test_mirror_different_methods(server_url):
 
 
 @pytest.mark.asyncio
-async def test_mirror_custom_headers(server_url, expected_text):
+async def test_mirror_custom_headers(server_url, expected_text, test_host):
     """Test mirror with custom request headers."""
     async with httpx.AsyncClient() as client:
         response = await client.get(
             f"{server_url}/",
             headers={
-                "x-hostname": "challenge.sarper.me",
+                "x-hostname": test_host,
                 "user-agent": "CustomBot/1.0",
                 "accept-language": "en-US",
                 "custom-header": "custom-value"
@@ -132,12 +132,12 @@ async def test_mirror_custom_headers(server_url, expected_text):
 
 
 @pytest.mark.asyncio
-async def test_mirror_cache_header(server_url, expected_text):
+async def test_mirror_cache_header(server_url, expected_text, test_host):
     """Test mirror with x-bypass-cache header."""
     async with httpx.AsyncClient() as client:
         response1 = await client.get(
             f"{server_url}/",
-            headers={"x-hostname": "challenge.sarper.me"},
+            headers={"x-hostname": test_host},
             timeout=60.0
         )
         assert response1.status_code == 200, "First request failed"
@@ -145,7 +145,7 @@ async def test_mirror_cache_header(server_url, expected_text):
         response2 = await client.get(
             f"{server_url}/",
             headers={
-                "x-hostname": "challenge.sarper.me",
+                "x-hostname": test_host,
                 "x-bypass-cache": "true"
             },
             timeout=60.0

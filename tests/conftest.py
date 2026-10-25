@@ -2,8 +2,13 @@ import pytest
 import pytest_asyncio
 from fastapi.testclient import TestClient
 
-TEST_URL = "https://challenge.sarper.me"
-EXPECTED_SUCCESS_TEXT = "cloudflare challenged passed. You are now a free bot."
+import os
+from urllib.parse import urlparse
+
+# public Cloudflare-protected test site; override with CF_TEST_URL / CF_TEST_EXPECTED_TEXT
+TEST_URL = os.environ.get("CF_TEST_URL", "http://cf.hackmap.win/")
+TEST_HOST = urlparse(TEST_URL).netloc
+EXPECTED_SUCCESS_TEXT = os.environ.get("CF_TEST_EXPECTED_TEXT", "")
 SERVER_URL = "http://localhost:8000"
 CF_COOKIE_PREFIXES = ("cf_", "__cf")
 MIN_HTML_LENGTH = 50
@@ -17,8 +22,14 @@ def test_url():
 
 @pytest.fixture
 def expected_text():
-    """Provide the expected success text after bypass."""
+    """Text the page shows once past the challenge ("" = only check the bypass itself)."""
     return EXPECTED_SUCCESS_TEXT
+
+
+@pytest.fixture
+def test_host():
+    """Bare host of the test site, for x-hostname mirroring."""
+    return TEST_HOST
 
 
 @pytest.fixture
@@ -52,7 +63,7 @@ async def bypasser():
     """Started CFBypasser backed by a real browser pool of one."""
     from cf_bypasser.browser.pool import BrowserPool
     from cf_bypasser.core.bypasser import CFBypasser
-    instance = CFBypasser(log=True, pool=BrowserPool(1))
+    instance = CFBypasser(log=True, pool=BrowserPool(1), cache_enabled=True)
     await instance.start()
     yield instance
     await instance.cleanup()
