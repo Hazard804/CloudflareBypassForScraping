@@ -155,8 +155,8 @@ def test_browsers_arg_sets_env(monkeypatch):
     import server
     monkeypatch.setattr(uvicorn, "run", lambda *a, **k: None)
     monkeypatch.setattr(sys, "argv", ["server.py", "--browsers", "5", "--headless"])
-    monkeypatch.delenv("CF_BROWSERS", raising=False)
-    monkeypatch.delenv("CF_HEADLESS", raising=False)
+    monkeypatch.setenv("CF_BROWSERS", "3")  # registered so monkeypatch restores them; main() writes os.environ
+    monkeypatch.setenv("CF_HEADLESS", "false")
     server.main()
     assert os.environ["CF_BROWSERS"] == "5"
     assert os.environ["CF_HEADLESS"] == "true"

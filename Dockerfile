@@ -36,7 +36,7 @@ RUN pip install -r server_requirements.txt \
        else pip uninstall -y pip setuptools wheel; fi \
     && find /usr/local/lib/python3.12 -name '__pycache__' -prune -exec rm -rf {} +
 COPY cf_bypasser cf_bypasser
-COPY server.py .
+COPY server.py healthcheck.py ./
 # the cookie cache file is written next to the app
 RUN chown -R app:app /app
 ENV CF_BROWSER_PATH=/opt/brave.com/brave/brave CF_HEADLESS=true CF_BROWSER_NO_SANDBOX=true CF_BROWSERS=3 PORT=8000
@@ -44,7 +44,7 @@ USER app
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-    CMD python -c "import os, sys, urllib.request; sys.exit(b'total' not in urllib.request.urlopen(f'http://127.0.0.1:{os.environ[\"PORT\"]}/browsers', timeout=4).read())"
+    CMD python healthcheck.py
 
 # tini as PID 1 reaps Brave helper processes re-parented on every browser restart.
 # args pass through: docker run IMAGE --browsers 5 (change the port with -e PORT=9000)

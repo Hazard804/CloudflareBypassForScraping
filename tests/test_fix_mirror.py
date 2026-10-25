@@ -210,3 +210,36 @@ def test_runtime_error_is_retried(monkeypatch):
         asyncio.run(run())
 
     assert calls["n"] == 3  # initial + 2 retries
+
+
+def test_mirror_without_cache_uses_fresh_session_each_time(monkeypatch):
+    import asyncio
+    from cf_bypasser.core import mirror as mirror_mod
+    created, closed = [], []
+
+    class FakeSession:
+        def __init__(self, **kw):
+            created.append(self)
+
+        async def request(self, **kw):
+            return type("R", (), {"status_code": 200, "headers": {}, "content": b"ok"})()
+
+        async def close(self):
+            closed.append(self)
+
+    class FakeBypasser:
+        cache_enabled = False
+
+        async def get_or_generate_cookies(self, url, proxy=None):
+            return {"cookies": {}, "user_agent": "UA"}
+
+    monkeypatch.setattr(mirror_mod, "AsyncSession", FakeSession)
+    m = mirror_mod.RequestMirror(FakeBypasser())
+
+    async def run():
+        for _ in range(2):
+            await m.mirror_request(method="GET", path="/", headers={}, hostname="example.com")
+
+    asyncio.run(run())
+    assert len(created) == 2 and len(closed) == 2  # target cookies never carried between requests
+    assert m.session_cache == {}

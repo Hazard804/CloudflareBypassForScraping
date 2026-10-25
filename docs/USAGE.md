@@ -25,13 +25,24 @@ pip install -r server_requirements.txt
 python server.py --browsers 3
 ```
 
-`server.py` accepts `--host`, `--port`, `--workers`, `--log-level`, `--browsers` (reused browsers per worker, default 3) and `--headless`. The Docker image runs Brave headless; arguments pass through, e.g. `docker run -p 8000:8000 IMAGE --browsers 5`.
+`server.py` accepts `--host`, `--port`, `--workers`, `--log-level`, `--browsers` (reused browsers per worker, default 3), `--headless`, `--enable-cache` (cookie caching is off by default) and `--auth-token`. The Docker image runs Brave headless; arguments pass through, e.g. `docker run -p 8000:8000 IMAGE --browsers 5`.
 
 ### Build from source
 ```bash
 docker build -t cloudflare-bypass .
 docker run -p 8000:8000 cloudflare-bypass
 ```
+
+## Authentication (optional)
+
+Off by default. Start the server with a token and every request must carry it:
+
+```bash
+python server.py --auth-token change-me            # or: docker run -e CF_AUTH_TOKEN=change-me ...
+curl -H "x-auth-token: change-me" "http://localhost:8000/cookies?url=https://example.com"
+```
+
+Requests without the header, or with a wrong value, get `401`. The `x-auth-token` header is stripped before mirrored requests reach the target site.
 
 ## Raw bytes — `/fetch`
 

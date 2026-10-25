@@ -2,11 +2,20 @@
 
 All runtime configuration is via environment variables. Every variable is optional and falls back to the default shown below. Set them before starting `server.py` (or in your Docker/compose `environment:` block).
 
-## Cookie cache
+## Authentication
 
 | Variable | Default | Description |
 |---|---|---|
-| `CF_COOKIE_TTL_MINUTES` | `29` | How long generated Cloudflare clearance cookies are cached before they're considered expired and regenerated. Cloudflare `cf_clearance` cookies are short-lived, so keep this under ~30 minutes. |
+| `CF_AUTH_TOKEN` | unset (off) | When set, every request (all endpoints, mirroring, `/browsers`, the API docs) must send `x-auth-token: <value>` or gets `401`. Same as `server.py --auth-token`. The header is never forwarded to mirrored sites. Leave unset to keep the server open, e.g. on a private network. |
+
+## Caching (off by default)
+
+By default nothing is cached: every request solves the challenge in a fresh browser context, nothing is written to disk, and request mirroring uses a fresh HTTP session per request, so no cookies carry over between requests or clients. Turn caching on to reuse clearance cookies (much faster for repeated requests to the same site, especially mirroring).
+
+| Variable | Default | Description |
+|---|---|---|
+| `CF_CACHE_ENABLED` | `false` | Cache clearance cookies (in memory and in `cf_cookie_cache.json`) and reuse mirror sessions. Same as `server.py --enable-cache`. `/cache/stats` and `/cache/clear` work either way. |
+| `CF_COOKIE_TTL_MINUTES` | `29` | How long generated Cloudflare clearance cookies are cached before they're considered expired and regenerated. Only used when caching is enabled. Cloudflare `cf_clearance` cookies are short-lived, so keep this under ~30 minutes. |
 
 ## Proxy exit-IP check
 

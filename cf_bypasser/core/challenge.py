@@ -238,3 +238,27 @@ def fetch_in_page(tab: Any, url: str, max_bytes: int) -> Dict[str, Any]:
         "url": result["url"],
         "body": base64.b64decode(result["body"]),
     }
+
+
+def find_file_url(tab: Any, url: str, log: Callable[[str], None] = logging.info,
+                  idle: float = 6, total: float = 25) -> Optional[str]:
+    """Navigate to url and return the first non-HTML document it ends up on (a site's own JS gate
+    redirecting to a file); None once no new document arrives for `idle` seconds."""
+    tab.listen.start(res_type=("Document",))
+    try:
+        if not solve(tab, url, log).success:
+            return None
+        deadline = monotonic() + total
+        for packet in tab.listen.steps(timeout=idle):  # timeout resets on every packet
+            if monotonic() > deadline:
+                return None
+            response = packet.response
+            mime = ((response.headers or {}).get("content-type", "") if response else "").lower()
+            if response and response.status == 200 and mime and "text/html" not in mime:
+                return packet.url
+        return None
+    finally:
+        try:
+            tab.listen.stop()
+        except Exception:
+            pass

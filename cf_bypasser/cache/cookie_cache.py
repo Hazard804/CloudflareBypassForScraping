@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from dataclasses import dataclass
 from typing import Dict, Any, Optional
 
-from cf_bypasser.utils.constants import COOKIE_TTL_MINUTES, DEFAULT_CACHE_FILE
+from cf_bypasser.utils.constants import CACHE_ENABLED, COOKIE_TTL_MINUTES, DEFAULT_CACHE_FILE
 
 
 @dataclass
@@ -47,11 +47,13 @@ class CachedCookies:
 class CookieCache:
     """Thread-safe cache for Cloudflare clearance cookies."""
 
-    def __init__(self, cache_file: str = DEFAULT_CACHE_FILE):
+    def __init__(self, cache_file: str = DEFAULT_CACHE_FILE, enabled: bool = CACHE_ENABLED):
         self.cache_file = cache_file
+        self.enabled = enabled
         self.cache: Dict[str, CachedCookies] = {}
         self.lock = threading.RLock()
-        self._load_cache()
+        if enabled:
+            self._load_cache()
 
     def _load_cache(self):
         try:
@@ -67,6 +69,8 @@ class CookieCache:
             logging.warning(f"Failed to load cache file: {e}")
 
     def _save_cache(self):
+        if not self.enabled:
+            return
         data = {key: cached.to_dict() for key, cached in self.cache.items()}
         directory = os.path.dirname(os.path.abspath(self.cache_file))
         try:
@@ -89,6 +93,8 @@ class CookieCache:
             logging.error(f"Failed to save cache file: {e}")
 
     def get(self, key: str) -> Optional[CachedCookies]:
+        if not self.enabled:
+            return None
         with self.lock:
             cached = self.cache.get(key)
             if cached and not cached.is_expired():
@@ -102,6 +108,8 @@ class CookieCache:
 
     def set(self, key: str, cookies: Dict[str, str], user_agent: str,
             ttl_minutes: int = COOKIE_TTL_MINUTES, exit_ip: Optional[str] = None):
+        if not self.enabled:
+            return
         with self.lock:
             expires_at = datetime.now() + timedelta(minutes=ttl_minutes)
             cached = CachedCookies(

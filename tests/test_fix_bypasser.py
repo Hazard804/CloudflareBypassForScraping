@@ -84,9 +84,9 @@ class FakeBrowser:
         self.states = type("S", (), {"is_alive": False})()
 
 
-def make_bypasser(tmp_path, size=2, **kw):
+def make_bypasser(tmp_path, size=2, cache_enabled=True, **kw):
     pool = BrowserPool(size, launcher=FakeBrowser)
-    return CFBypasser(log=False, cache_file=str(tmp_path / "cache.json"), pool=pool, **kw)
+    return CFBypasser(log=False, cache_file=str(tmp_path / "cache.json"), pool=pool, cache_enabled=cache_enabled, **kw)
 
 
 def fake_job(cookies, cf_detected=False, delay=0.0, tracker=None):
@@ -367,7 +367,7 @@ async def test_job_timeout_poisons_slot(tmp_path, monkeypatch):
         launches.append(1)
         return FakeBrowser()
 
-    b = CFBypasser(log=False, cache_file=str(tmp_path / "c.json"), pool=BrowserPool(1, launcher=launcher))
+    b = CFBypasser(log=False, cache_file=str(tmp_path / "c.json"), pool=BrowserPool(1, launcher=launcher), cache_enabled=True)
     await b.start()
     monkeypatch.setattr(bp, "JOB_TIMEOUT_SECONDS", 0.1)
     monkeypatch.setattr(CFBypasser, "_job", fake_job({"s": "1"}, delay=0.5))
@@ -400,7 +400,7 @@ async def test_cancelled_request_poisons_slot(tmp_path, monkeypatch):
         launches.append(1)
         return FakeBrowser()
 
-    b = CFBypasser(log=False, cache_file=str(tmp_path / "c.json"), pool=BrowserPool(1, launcher=launcher))
+    b = CFBypasser(log=False, cache_file=str(tmp_path / "c.json"), pool=BrowserPool(1, launcher=launcher), cache_enabled=True)
     await b.start()
     monkeypatch.setattr(CFBypasser, "_job", fake_job({"s": "1"}, delay=0.3))
     task = asyncio.create_task(b.get_or_generate_html("https://x.com"))
@@ -536,6 +536,113 @@ async def test_browser_job_clears_expired_cache_entries(tmp_path, monkeypatch):
     monkeypatch.setattr(CFBypasser, "_job", fake_job({"s": "1"}))
     await b.get_or_generate_html("https://x.com")
     assert "old" not in b.cookie_cache.cache
+    await b.cleanup()
+
+
+class _Session:
+    def __init__(self):
+        self.tab = FakeTab()
+
+    def get_cookies(self):
+        return {"cf_clearance": "c"}
+
+    def user_agent(self):
+        return "UA"
+
+
+def _patch_session(monkeypatch):
+    import cf_bypasser.core.bypasser as bpm
+
+    class Ctx:
+        def __init__(self, browser, proxy_server):
+            self.session = _Session()
+            self.proxy_server = proxy_server
+
+        def __enter__(self):
+            return self.session
+
+        def __exit__(self, *a):
+            pass
+
+    monkeypatch.setattr(bpm, "BrowserContextSession", Ctx)
+    monkeypatch.setattr(challenge, "solve", lambda tab, url, log=None: challenge.ChallengeResult(True, True, 200))
+
+
+def test_fetch_follows_js_gate_to_file(monkeypatch):
+    # ScienceDirect-style: the URL answers with an HTML gate whose JS redirects to a signed file URL (#121)
+    _patch_session(monkeypatch)
+    monkeypatch.setattr(challenge, "fetch_in_page", lambda tab, url, max_bytes: {
+        "status_code": 200, "content_type": "text/html", "url": url, "body": b"<html>gate</html>"})
+    monkeypatch.setattr(challenge, "find_file_url", lambda tab, url, log=None: "https://cdn.example/signed.pdf")
+    downloads = []
+
+    def fake_download(self, url, cookies, user_agent, proxy_server, referer):
+        downloads.append((url, cookies, user_agent, proxy_server))
+        return {"status_code": 200, "content_type": "application/pdf", "url": url, "body": b"%PDF-1.7"}
+
+    monkeypatch.setattr(CFBypasser, "_download", fake_download)
+    b = CFBypasser(log=False, pool=BrowserPool(1, launcher=FakeBrowser))
+    data, _ = b._job(object(), "https://site.example/pdfft?x=1", "http://127.0.0.1:9999", None, "fetch")
+    assert data["body"] == b"%PDF-1.7" and data["content_type"] == "application/pdf"
+    assert downloads == [("https://cdn.example/signed.pdf", {"cf_clearance": "c"}, "UA", "http://127.0.0.1:9999")]
+
+
+def test_fetch_keeps_real_html_when_no_file_behind_it(monkeypatch):
+    _patch_session(monkeypatch)
+    monkeypatch.setattr(challenge, "fetch_in_page", lambda tab, url, max_bytes: {
+        "status_code": 200, "content_type": "text/html; charset=utf-8", "url": url, "body": b"<html>page</html>"})
+    monkeypatch.setattr(challenge, "find_file_url", lambda tab, url, log=None: None)
+    b = CFBypasser(log=False, pool=BrowserPool(1, launcher=FakeBrowser))
+    data, _ = b._job(object(), "https://site.example/page", None, None, "fetch")
+    assert data["body"] == b"<html>page</html>"
+
+
+def test_fetch_binary_skips_navigation(monkeypatch):
+    _patch_session(monkeypatch)
+    monkeypatch.setattr(challenge, "fetch_in_page", lambda tab, url, max_bytes: {
+        "status_code": 200, "content_type": "application/pdf", "url": url, "body": b"%PDF"})
+    monkeypatch.setattr(challenge, "find_file_url", lambda *a, **k: pytest.fail("must not navigate for a binary result"))
+    b = CFBypasser(log=False, pool=BrowserPool(1, launcher=FakeBrowser))
+    data, _ = b._job(object(), "https://site.example/a.pdf", None, None, "fetch")
+    assert data["body"] == b"%PDF"
+
+
+async def test_cache_disabled_by_default(tmp_path, monkeypatch):
+    import os
+    b = CFBypasser(log=False, cache_file=str(tmp_path / "cache.json"), pool=BrowserPool(2, launcher=FakeBrowser))
+    await b.start()
+    calls = []
+    monkeypatch.setattr(CFBypasser, "_job", fake_job({"cf_clearance": "c"}, cf_detected=True, tracker=calls))
+    await b.get_or_generate_cookies("https://same.com")
+    await b.get_or_generate_cookies("https://same.com")
+    await b.get_or_generate_html("https://same.com")
+    assert len(calls) == 3  # nothing served from cache
+    assert [c[1] for c in calls] == [None, None, None]  # nothing restored into the browser either
+    assert b.cookie_cache.cache == {}
+    assert not os.path.exists(tmp_path / "cache.json")
+    await b.cleanup()
+
+
+async def test_cache_disabled_runs_same_host_in_parallel(tmp_path, monkeypatch):
+    import threading
+    b = CFBypasser(log=False, cache_file=str(tmp_path / "c.json"), pool=BrowserPool(3, launcher=FakeBrowser))
+    await b.start()
+    live = peak = 0
+    lock = threading.Lock()
+
+    def job(self, browser, url, proxy_server, cached_cookies, mode):
+        nonlocal live, peak
+        with lock:
+            live += 1
+            peak = max(peak, live)
+        time.sleep(0.1)
+        with lock:
+            live -= 1
+        return {"cookies": {}, "user_agent": "UA"}, False
+
+    monkeypatch.setattr(CFBypasser, "_job", job)
+    await asyncio.gather(*(b.get_or_generate_cookies("https://same.com") for _ in range(3)))
+    assert peak == 3  # no per-host lock without a cache to share
     await b.cleanup()
 
 

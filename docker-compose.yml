@@ -6,6 +6,7 @@ services:
       - "8000:8000"
     environment:
       - WORKERS=3
+      # - CF_AUTH_TOKEN=change-me  # require x-auth-token on every request
       - CF_BROWSERS=3  # each headless Brave takes ~200-400 MB; raise the memory limit with this
     deploy:
       resources:
@@ -14,7 +15,7 @@ services:
           cpus: '2'
     shm_size: 2g
     healthcheck:
-      test: ["CMD", "python", "-c", "import os, sys, urllib.request; sys.exit(b'total' not in urllib.request.urlopen(f'http://127.0.0.1:{os.environ[\"PORT\"]}/browsers', timeout=4).read())"]
+      test: ["CMD", "python", "healthcheck.py"]
       interval: 30s
       timeout: 5s
       start_period: 60s
