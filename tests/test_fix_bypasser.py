@@ -304,6 +304,19 @@ async def test_concurrency_capped_by_pool_size(tmp_path, monkeypatch):
     await b.cleanup()
 
 
+async def test_bypass_cache_forces_fresh_cookies(tmp_path, monkeypatch):
+    b = make_bypasser(tmp_path)
+    await b.start()
+    calls = []
+    monkeypatch.setattr(CFBypasser, "_job", fake_job({"s": "1"}, tracker=calls))
+    await b.get_or_generate_cookies("https://same.com")
+    await b.get_or_generate_cookies("https://same.com")
+    assert len(calls) == 1
+    await b.get_or_generate_cookies("https://same.com", bypass_cache=True)
+    assert len(calls) == 2
+    await b.cleanup()
+
+
 async def test_inflight_dedup(tmp_path, monkeypatch):
     b = make_bypasser(tmp_path)
     await b.start()

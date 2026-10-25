@@ -54,12 +54,12 @@ def test_openapi_paths_and_params_unchanged(api):
     spec = api.get("/openapi.json").json()
     assert {"/cookies", "/html", "/cache/clear", "/cache/stats", "/{path}"} <= set(spec["paths"])
     params = lambda p: {x["name"] for x in spec["paths"][p]["get"]["parameters"]}  # noqa: E731
-    assert params("/cookies") == {"url", "retries", "proxy"}
+    assert params("/cookies") == {"url", "retries", "proxy", "bypassCookieCache"}
     assert params("/html") == {"url", "retries", "proxy", "bypassCookieCache"}
 
 
 def test_cookies_response_shape(api, monkeypatch):
-    async def fake(self, url, proxy=None):
+    async def fake(self, url, proxy=None, bypass_cache=False):
         return {"cookies": {"cf_clearance": "x"}, "user_agent": "UA"}
     monkeypatch.setattr(CFBypasser, "get_or_generate_cookies", fake)
     r = api.get("/cookies", params={"url": "https://example.com", "retries": 3})
@@ -67,8 +67,21 @@ def test_cookies_response_shape(api, monkeypatch):
     assert r.json() == {"cookies": {"cf_clearance": "x"}, "user_agent": "UA"}
 
 
+def test_cookies_bypass_cache_param_forwarded(api, monkeypatch):
+    seen = {}
+
+    async def fake(self, url, proxy=None, bypass_cache=False):
+        seen["bypass_cache"] = bypass_cache
+        return {"cookies": {"a": "1"}, "user_agent": "UA"}
+    monkeypatch.setattr(CFBypasser, "get_or_generate_cookies", fake)
+    api.get("/cookies", params={"url": "https://example.com", "bypassCookieCache": "true"})
+    assert seen["bypass_cache"] is True
+    api.get("/cookies", params={"url": "https://example.com"})
+    assert seen["bypass_cache"] is False
+
+
 def test_cookies_failure_detail_unchanged(api, monkeypatch):
-    async def fake(self, url, proxy=None):
+    async def fake(self, url, proxy=None, bypass_cache=False):
         return None
     monkeypatch.setattr(CFBypasser, "get_or_generate_cookies", fake)
     r = api.get("/cookies", params={"url": "https://example.com"})

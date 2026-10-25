@@ -163,21 +163,25 @@ class CFBypasser:
             if relayed:
                 await self.relays.release(proxy)
 
-    async def get_or_generate_cookies(self, url: str, proxy: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        """Get cached cookies or generate new ones."""
+    async def get_or_generate_cookies(
+        self, url: str, proxy: Optional[str] = None, bypass_cache: bool = False
+    ) -> Optional[Dict[str, Any]]:
+        """Get cached cookies or generate new ones; bypass_cache ignores a still-valid entry."""
         key = cache_key(urlparse(url).netloc, proxy)
 
-        cached = await self._read_valid_cache(key, proxy)
-        if cached:
-            return {"cookies": cached.cookies, "user_agent": cached.user_agent}
-
-        async with _inflight_lock(key):
-            # another waiter may have populated the cache while we queued
+        if not bypass_cache:
             cached = await self._read_valid_cache(key, proxy)
             if cached:
                 return {"cookies": cached.cookies, "user_agent": cached.user_agent}
 
-            self.log_message(f"No cached cookies for {key}, generating new ones...")
+        async with _inflight_lock(key):
+            # another waiter may have populated the cache while we queued
+            if not bypass_cache:
+                cached = await self._read_valid_cache(key, proxy)
+                if cached:
+                    return {"cookies": cached.cookies, "user_agent": cached.user_agent}
+
+            self.log_message(f"Generating fresh cookies for {key}...")
             return await self._run_in_browser(url, proxy, key, restore_cookies=False, want_html=False)
 
     async def get_or_generate_html(self, url: str, proxy: Optional[str] = None, bypass_cache: bool = False) -> Optional[Dict[str, Any]]:
