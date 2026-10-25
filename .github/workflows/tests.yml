@@ -55,6 +55,10 @@ jobs:
         pip install -r server_requirements.txt
         pip install -r tests/test-requirements.txt
 
+    - name: Run unit tests (no real browser)
+      run: |
+        python -m pytest -c tests/pytest.ini tests -m "not live" -v --tb=short --timeout=120
+
     - name: Show installed packages
       run: |
         pip list
@@ -74,8 +78,8 @@ jobs:
         python server.py &
         SERVER_PID=$!
         echo "SERVER_PID=$SERVER_PID" >> $GITHUB_ENV
-        sleep 10
-        curl -f http://localhost:8000/cache/stats || exit 1
+        for i in $(seq 1 60); do curl -fs http://localhost:8000/browsers && break; sleep 1; done
+        curl -f http://localhost:8000/browsers || exit 1
 
     - name: Run Server Endpoint Tests
       run: |

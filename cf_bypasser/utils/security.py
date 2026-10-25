@@ -1,7 +1,8 @@
 import ipaddress
+import logging
 import socket
 from typing import Optional
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse
 
 
 def _ip_is_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
@@ -78,3 +79,27 @@ def redact_proxy(proxy: Optional[str]) -> Optional[str]:
     if ":" in userinfo:
         userinfo = userinfo.split(":", 1)[0] + ":***"
     return f"{scheme}{sep}{userinfo}@{hostport}"
+
+
+def redact_query(path: str) -> str:
+    """Request path with the password inside any proxy= query value redacted, for access logs."""
+    base, sep, query = path.partition("?")
+    if not sep or "proxy" not in query.lower():
+        return path
+    pairs = []
+    for name, value in parse_qsl(query, keep_blank_values=True):
+        if name.lower() == "proxy":
+            value = redact_proxy(value)
+        pairs.append((name, value))
+    return f"{base}?{urlencode(pairs)}"
+
+
+class AccessLogRedactor(logging.Filter):
+    """Keeps proxy credentials passed as ?proxy= out of uvicorn's access log."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple) and len(record.args) >= 3 and isinstance(record.args[2], str):
+            args = list(record.args)
+            args[2] = redact_query(args[2])
+            record.args = tuple(args)
+        return True

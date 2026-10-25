@@ -3,6 +3,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from cf_bypasser.utils.constants import APP_VERSION
+from cf_bypasser.utils.security import AccessLogRedactor
 from .routes import setup_routes, lifespan
 
 
@@ -27,6 +28,10 @@ def create_app() -> FastAPI:
         format='[%(asctime)s] %(levelname)s - %(name)s - %(message)s',
         datefmt='%H:%M:%S'
     )
+
+    access_log = logging.getLogger("uvicorn.access")
+    if not any(isinstance(f, AccessLogRedactor) for f in access_log.filters):
+        access_log.addFilter(AccessLogRedactor())
 
     setup_routes(app)
     return app

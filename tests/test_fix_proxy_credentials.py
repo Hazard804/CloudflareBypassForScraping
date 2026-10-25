@@ -41,3 +41,27 @@ def test_mirror_route_logs_no_password(caplog, monkeypatch, tmp_path):
         c.get("/", headers={"x-hostname": "example.com", "x-proxy": f"http://user:{SECRET}@gw.example.com:823"})
     assert SECRET not in caplog.text
     assert "user:***@gw.example.com:823" in caplog.text
+
+
+def test_redact_query_hides_proxy_password():
+    from urllib.parse import quote
+    from cf_bypasser.utils.security import redact_query
+    path = "/cookies?url=https%3A%2F%2Fx.com%2F&proxy=" + quote(f"http://user:{SECRET}@gw.example.com:823", safe="")
+    out = redact_query(path)
+    assert "pa%2Fss" not in out and "pa/ss" not in out and SECRET not in out
+    assert out.startswith("/cookies?url=https%3A%2F%2Fx.com%2F&proxy=")
+    assert "%2A%2A%2A" in out or "***" in out
+    assert redact_query("/html?url=https%3A%2F%2Fx.com") == "/html?url=https%3A%2F%2Fx.com"
+
+
+def test_access_log_redacts_proxy_password(caplog, tmp_path, monkeypatch):
+    from urllib.parse import quote
+    from cf_bypasser.server.app import create_app
+    monkeypatch.chdir(tmp_path)
+    create_app()
+    access = logging.getLogger("uvicorn.access")
+    with caplog.at_level(logging.INFO, logger="uvicorn.access"):
+        access.info('%s - "%s %s HTTP/%s" %d', "1.2.3.4:5", "GET",
+                    "/cookies?url=x&proxy=" + quote(f"http://user:{SECRET}@h:1", safe=""), "1.1", 500)
+    assert "pa%2Fss" not in caplog.text and SECRET not in caplog.text
+    assert "user" in caplog.text

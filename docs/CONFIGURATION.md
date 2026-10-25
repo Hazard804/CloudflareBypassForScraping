@@ -24,7 +24,7 @@ A rotating residential proxy can change its exit IP unexpectedly, which invalida
 |---|---|---|
 | `CF_BROWSERS` | `3` | Number of Brave processes kept running and reused (per worker). Each request borrows one; extra requests queue. Same as `server.py --browsers N`. |
 | `CF_BROWSER_MAX_JOBS` | `200` | A browser is restarted after serving this many requests, to keep memory in check. |
-| `CF_JOB_TIMEOUT` | `90` | Seconds one request may hold a browser. On timeout the browser is killed and relaunched. |
+| `CF_JOB_TIMEOUT` | `120` | Seconds one request may hold a browser. On timeout the browser is killed and relaunched. |
 | `CF_CHALLENGE_TIMEOUT` | `30` | Seconds to keep polling/clicking the Turnstile checkbox before giving up. |
 | `CF_MIRROR_MAX_RETRIES` | `2` | Extra attempts for a mirrored request after a 403 or network error. |
 | `CF_MIRROR_RETRY_DELAY` | `0.5` | Seconds to wait between mirror retries; raise it to avoid hammering a site. |
@@ -38,7 +38,8 @@ A rotating residential proxy can change its exit IP unexpectedly, which invalida
 | `CF_HEADLESS` | `false` (`true` in Docker) | Run Brave headless. Same as `server.py --headless`. |
 | `CF_LOCALE` | `en-US` | Browser language (`--lang`/`Accept-Language`) and the `Accept-Language` sent by request mirroring. Match it to your proxy's region. |
 | `CF_FETCH_MAX_BYTES` | `52428800` | Largest response `/fetch` returns (50 MB). |
-| `CF_BROWSER_NO_SANDBOX` | `false` (`true` in Docker) | Pass `--no-sandbox`; needed inside containers. Applied automatically when running as root. |
+| `CF_BROWSER_NO_SANDBOX` | `false` (`true` in Docker) | Pass `--no-sandbox`; needed inside containers under Docker's default seccomp profile. Applied automatically when running as root. The browser loads URLs your clients choose, so treat the container as untrusted: it runs as a non-root user and holds no secrets, and you can re-enable the sandbox by running with a seccomp profile that allows user namespaces and setting this to `false`. |
+| `PORT` | `8000` | Port the server listens on (same as `--port`); the Docker healthcheck follows it. |
 
 ## Proxies
 

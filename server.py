@@ -11,7 +11,7 @@ def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(description="Cloudflare Bypasser Server")
     parser.add_argument("--host", type=str, default="0.0.0.0", help="Host to bind to")
-    parser.add_argument("--port", type=int, default=8000, help="Port to bind to")
+    parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8000")), help="Port to bind to (env PORT)")
     parser.add_argument("--workers", type=int, default=1, help="Number of worker processes")
     parser.add_argument("--log-level", type=str, default="info", help="Log level")
     parser.add_argument("--browsers", type=int, default=int(os.environ.get("CF_BROWSERS", "3")),

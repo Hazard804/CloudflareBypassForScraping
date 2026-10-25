@@ -14,7 +14,7 @@ services:
           cpus: '2'
     shm_size: 2g
     healthcheck:
-      test: ["CMD", "python", "-c", "import sys, urllib.request; sys.exit(b'total' not in urllib.request.urlopen('http://127.0.0.1:8000/browsers', timeout=4).read())"]
+      test: ["CMD", "python", "-c", "import os, sys, urllib.request; sys.exit(b'total' not in urllib.request.urlopen(f'http://127.0.0.1:{os.environ[\"PORT\"]}/browsers', timeout=4).read())"]
       interval: 30s
       timeout: 5s
       start_period: 60s
