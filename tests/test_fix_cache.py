@@ -104,3 +104,17 @@ def test_sequential_saves_keep_file_valid(tmp_path):
             data = json.load(f)
         assert f"host{i}.com" in data
     assert len(json.load(open(path))) == 25
+
+
+def test_unwritable_cache_dir_does_not_raise(tmp_path):
+    import os
+    from cf_bypasser.cache.cookie_cache import CookieCache
+    ro = tmp_path / "ro"
+    ro.mkdir()
+    cache = CookieCache(str(ro / "cache.json"))
+    os.chmod(ro, 0o500)
+    try:
+        cache.set("k", {"cf_clearance": "x"}, "UA")  # must only log, never fail the request
+        assert cache.get("k").cookies == {"cf_clearance": "x"}
+    finally:
+        os.chmod(ro, 0o700)

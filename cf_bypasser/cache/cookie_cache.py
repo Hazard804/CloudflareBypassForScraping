@@ -69,7 +69,12 @@ class CookieCache:
     def _save_cache(self):
         data = {key: cached.to_dict() for key, cached in self.cache.items()}
         directory = os.path.dirname(os.path.abspath(self.cache_file))
-        fd, tmp_path = tempfile.mkstemp(dir=directory, prefix=".cf_cache.", suffix=".tmp")
+        try:
+            fd, tmp_path = tempfile.mkstemp(dir=directory, prefix=".cf_cache.", suffix=".tmp")
+        except OSError as e:
+            # an unwritable cache dir must never fail a request that already solved
+            logging.error(f"Failed to save cache file: {e}")
+            return
         try:
             with os.fdopen(fd, 'w') as f:
                 json.dump(data, f, indent=2)
