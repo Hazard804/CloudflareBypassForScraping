@@ -220,13 +220,10 @@ class RequestMirror:
                     raise
 
     async def cleanup(self):
-        """Clean up resources."""
+        """Close mirror HTTP sessions. The bypasser's browser pool is shut down by its owner, not here."""
         for session in self.session_cache.values():
             try:
                 await session.close()
             except Exception as e:
                 logging.error(f"Error closing session: {e}")
         self.session_cache.clear()
-
-        if self.bypasser:
-            await self.bypasser.cleanup()

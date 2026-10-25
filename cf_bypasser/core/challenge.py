@@ -37,6 +37,31 @@ def _attrs(node: dict) -> dict:
     return dict(zip(flat[::2], flat[1::2]))
 
 
+def _open_frame(owner: Any, backend_id: int) -> Any:
+    """ChromiumFrame without DrissionPage's singleton trap.
+
+    A failed cross-origin __init__ leaves a half-built object in ChromiumFrame._Frames, and the
+    next lookup of that frame id spins forever waiting for it; clear such entries before and after.
+    """
+    node = owner._run_cdp("DOM.describeNode", backendNodeId=backend_id)["node"]
+    frame_id = node.get("frameId")
+    stale = ChromiumFrame._Frames.get(frame_id)
+    if stale is not None and getattr(stale, "_type", None) != "ChromiumFrame":
+        ChromiumFrame._Frames.pop(frame_id, None)
+    try:
+        return ChromiumFrame(owner, ChromiumElement(owner, backend_id=backend_id), info={"node": node})
+    except BaseException:
+        ChromiumFrame._Frames.pop(frame_id, None)
+        raise
+
+
+def forget_frames(tab: Any) -> None:
+    """Drop DrissionPage's cached frame objects for a tab that is going away (they never expire)."""
+    for frame_id, frame in list(ChromiumFrame._Frames.items()):
+        if getattr(frame, "_tab", None) is tab or getattr(frame, "_type", None) != "ChromiumFrame":
+            ChromiumFrame._Frames.pop(frame_id, None)
+
+
 def find_turnstile_checkbox(owner: Any, _depth: int = 0) -> Optional[ChromiumElement]:
     """Recursively search shadow roots (incl. closed) and iframes (incl. cross-origin) for the checkbox."""
     if _depth > 5:
@@ -58,7 +83,7 @@ def find_turnstile_checkbox(owner: Any, _depth: int = 0) -> Optional[ChromiumEle
             stack.append(node["contentDocument"])
     for backend_id in iframes:
         try:
-            frame = ChromiumFrame(owner, ChromiumElement(owner, backend_id=backend_id))
+            frame = _open_frame(owner, backend_id)
             found = find_turnstile_checkbox(frame, _depth + 1)
         except Exception as e:
             logging.debug(f"Skipping iframe {backend_id}: {e}")
@@ -113,10 +138,15 @@ def solve(tab: Any, url: str, log: Callable[[str], None] = logging.info) -> Chal
         log(f"Navigating to {url}")
         try:
             # never eager: it calls Page.stopLoading and cancels the challenge script (v1?ray=...)
-            tab.get(url, retry=0, timeout=DEFAULT_TIMEOUT_MS / 1000)
+            loaded = tab.get(url, retry=0, timeout=DEFAULT_TIMEOUT_MS / 1000)
             status = _nav_status(tab, status)
         except Exception as nav_err:
-            log(f"Navigation warning: {nav_err}")
+            log(f"Navigation failed: {nav_err}")
+            return ChallengeResult(False, cf_detected, 0)
+        # a dead proxy or DNS failure renders Chrome's own error page, which has no "cloudflare" in it
+        if not loaded or (tab.url or "").startswith("chrome-error://"):
+            log(f"Navigation failed (proxy or network error) for {url}")
+            return ChallengeResult(False, cf_detected, 0)
 
         try:
             html_content = tab.html

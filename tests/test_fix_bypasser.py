@@ -58,7 +58,7 @@ class FakeTab:
         return self._html
 
     def get(self, url, **k):
-        return True
+        return getattr(self, "_get_ok", True)
 
     def run_js(self, script):
         return self._status
@@ -121,6 +121,23 @@ def test_clear_non_cf_page_succeeds():
     assert challenge.is_bypassed(tab) is True
     success, cf_detected, _ = challenge.solve(tab, "https://x.com")
     assert success is True and cf_detected is False
+
+
+def test_dead_proxy_error_page_is_failure():
+    # Chrome shows its own ERR_TUNNEL_CONNECTION_FAILED page; it has no "cloudflare" in it
+    tab = FakeTab(html="<html>This site can't be reached ERR_TUNNEL_CONNECTION_FAILED</html>", title="x")
+    tab._get_ok = False
+    tab.url = "chrome-error://chromewebdata/"
+    assert challenge.solve(tab, "https://x.com").success is False
+
+
+def test_navigation_exception_is_failure():
+    tab = FakeTab(html=NON_CF_HTML)
+
+    def boom(url, **k):
+        raise RuntimeError("net::ERR_PROXY_CONNECTION_FAILED")
+    tab.get = boom
+    assert challenge.solve(tab, "https://x.com").success is False
 
 
 def test_challenge_title_not_bypassed():
@@ -203,7 +220,7 @@ def _sr(kind, children):
 def fake_dom(monkeypatch):
     frames = {}
     monkeypatch.setattr(challenge, "ChromiumElement", lambda owner, backend_id: (owner.name, backend_id))
-    monkeypatch.setattr(challenge, "ChromiumFrame", lambda owner, ele: frames[ele[1]])
+    monkeypatch.setattr(challenge, "_open_frame", lambda owner, backend_id: frames[backend_id])
     return frames
 
 
@@ -459,6 +476,57 @@ async def test_fetch_bytes_solves_on_origin_and_caches(tmp_path, monkeypatch):
     assert data is not None
     assert b.cookie_cache.get(cache_key("example.com", None)) is not None
     await b.cleanup()
+
+
+def test_open_frame_clears_half_built_singleton(monkeypatch):
+    from DrissionPage._pages.chromium_frame import ChromiumFrame as RealFrame
+
+    class Stale:  # what a failed cross-origin __init__ leaves behind: registered, no _type
+        pass
+
+    built = []
+
+    class FakeFrame:
+        _Frames = RealFrame._Frames
+
+        def __new__(cls, owner, ele, info=None):
+            assert not isinstance(cls._Frames.get("F1"), Stale), "would spin forever on the stale entry"
+            built.append(info)
+            return "frame"
+
+    class Owner:
+        def _run_cdp(self, cmd, **kw):
+            return {"node": {"frameId": "F1"}}
+
+    RealFrame._Frames["F1"] = Stale()
+    monkeypatch.setattr(challenge, "ChromiumFrame", FakeFrame)
+    monkeypatch.setattr(challenge, "ChromiumElement", lambda owner, backend_id: object())
+    try:
+        assert challenge._open_frame(Owner(), 17) == "frame"
+        assert built == [{"node": {"frameId": "F1"}}]
+    finally:
+        RealFrame._Frames.pop("F1", None)
+
+
+def test_open_frame_failure_unregisters(monkeypatch):
+    from DrissionPage._pages.chromium_frame import ChromiumFrame as RealFrame
+
+    class FakeFrame:
+        _Frames = RealFrame._Frames
+
+        def __new__(cls, owner, ele, info=None):
+            cls._Frames["F2"] = object()  # DrissionPage registers before __init__ can fail
+            raise RuntimeError("target not attached yet")
+
+    class Owner:
+        def _run_cdp(self, cmd, **kw):
+            return {"node": {"frameId": "F2"}}
+
+    monkeypatch.setattr(challenge, "ChromiumFrame", FakeFrame)
+    monkeypatch.setattr(challenge, "ChromiumElement", lambda owner, backend_id: object())
+    with pytest.raises(RuntimeError):
+        challenge._open_frame(Owner(), 18)
+    assert "F2" not in RealFrame._Frames
 
 
 def test_cache_key_no_collision():

@@ -161,3 +161,15 @@ def test_browsers_arg_rejects_zero(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["server.py", "--browsers", "0"])
     with pytest.raises(SystemExit):
         server.main()
+
+
+def test_cache_clear_keeps_browser_pool_alive(api, monkeypatch):
+    assert api.post("/cache/clear").status_code == 200
+    body = api.get("/browsers").json()
+    assert body["available"] == body["total"]
+
+    async def fake(self, url, proxy=None, bypass_cache=False):
+        return {"cookies": {"a": "1"}, "user_agent": "UA"}
+    from cf_bypasser.core.bypasser import CFBypasser as B
+    from cf_bypasser.server import routes
+    assert routes.global_bypasser.pool._stopped is False

@@ -43,6 +43,9 @@ class BrowserContextSession:
     def _dispose(self) -> None:
         if self.context_id is None:
             return
+        if self.tab is not None:
+            from cf_bypasser.core.challenge import forget_frames
+            forget_frames(self.tab)
         try:
             self.browser._run_cdp("Target.disposeBrowserContext", browserContextId=self.context_id)
         except Exception as e:
