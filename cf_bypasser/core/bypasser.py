@@ -15,6 +15,7 @@ from cf_bypasser.utils.constants import (
 )
 from cf_bypasser.utils.ipcheck import get_exit_ip
 from cf_bypasser.utils.misc import cache_key, per_loop
+from cf_bypasser.utils.security import redact_proxy
 
 # One in-flight lock registry per event loop (multi-loop pytest safe).
 _inflight_locks: dict = {}
@@ -57,11 +58,12 @@ class CFBypasser:
         try:
             parsed = urlparse(proxy)
             if not parsed.scheme or not parsed.hostname or not parsed.port:
-                self.log_message(f"Invalid proxy format: {proxy}")
+                self.log_message(f"Invalid proxy format: {redact_proxy(proxy)}")
                 return None
             return proxy
         except Exception as e:
-            self.log_message(f"Error parsing proxy {proxy}: {e}")
+            # urlparse's message can echo part of the password ("Port could not be cast ... 'pa'")
+            self.log_message(f"Error parsing proxy {redact_proxy(proxy)}: {type(e).__name__}")
             return None
 
     async def _resolve_proxy(self, proxy: Optional[str]) -> Tuple[Optional[str], bool]:
@@ -70,7 +72,7 @@ class CFBypasser:
             return None, False
         if not self.parse_proxy(proxy):
             # never silently fall back to direct: that leaks the real IP
-            raise ValueError(f"Invalid proxy, refusing to continue direct: {proxy}")
+            raise ValueError(f"Invalid proxy, refusing to continue direct: {redact_proxy(proxy)}")
         if needs_relay(proxy):
             return await self.relays.acquire(proxy), True
         parsed = urlparse(proxy)

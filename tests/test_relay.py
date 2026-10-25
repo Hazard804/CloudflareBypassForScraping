@@ -192,4 +192,95 @@ def test_needs_relay():
     assert needs_relay("socks5://h:1")
     assert needs_relay("socks4://h:1")
     assert not needs_relay("http://h:1")
-    assert not needs_relay("https://h:1")
+    assert needs_relay("https://h:1")  # TLS-or-plain detection lives in the relay
+
+
+def _self_signed(tmp_path):
+    import subprocess
+    cert, key = tmp_path / "c.pem", tmp_path / "k.pem"
+    subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
+                    "-subj", "/CN=localhost", "-addext", "subjectAltName=IP:127.0.0.1",
+                    "-keyout", str(key), "-out", str(cert)], check=True, capture_output=True)
+    return cert, key
+
+
+@pytest_asyncio.fixture(loop_scope="function")
+async def tls_upstream(upstream, tmp_path):
+    """TLS-terminating front for the CONNECT proxy, like a real https:// proxy."""
+    import ssl
+    cert, key = _self_signed(tmp_path)
+    ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    ctx.load_cert_chain(cert, key)
+
+    async def handle(reader, writer):
+        r2, w2 = await asyncio.open_connection("127.0.0.1", upstream.port)
+
+        async def pipe(r, w):
+            try:
+                while data := await r.read(65536):
+                    w.write(data)
+                    await w.drain()
+            except Exception:
+                pass
+            finally:
+                w.close()
+
+        await asyncio.gather(pipe(reader, w2), pipe(r2, writer))
+
+    server = await asyncio.start_server(handle, "127.0.0.1", 0, ssl=ctx)
+    srv = _Server(server)
+    srv.cert = cert
+    yield srv
+    server.close()
+
+
+async def test_https_upstream_speaks_tls(origin, upstream, tls_upstream, monkeypatch):
+    import ssl
+    import cf_bypasser.browser.relay as relay_mod
+    monkeypatch.setattr(relay_mod, "_proxy_ssl_context", lambda: ssl.create_default_context(cafile=str(tls_upstream.cert)))
+    relay = ProxyRelay(f"https://u:p@127.0.0.1:{tls_upstream.port}")
+    await relay.start()
+    try:
+        status, body = await _connect_get(relay.url, f"127.0.0.1:{origin.port}")
+        assert status.startswith(b"HTTP/1.1 200") and body.endswith(b"origin-ok")
+        assert upstream.saw_auth
+    finally:
+        await relay.stop()
+
+
+async def test_https_upstream_bad_cert_never_falls_back_to_plain(origin, upstream, tls_upstream):
+    relay = ProxyRelay(f"https://u:p@127.0.0.1:{tls_upstream.port}")  # self-signed, not trusted
+    await relay.start()
+    try:
+        status, _ = await _connect_get(relay.url, f"127.0.0.1:{origin.port}")
+        assert status.startswith(b"HTTP/1.1 502")
+        assert not upstream.saw_auth
+    finally:
+        await relay.stop()
+
+
+async def test_https_scheme_on_plain_proxy_falls_back(origin, upstream, monkeypatch):
+    # providers often write https:// for a plain HTTP proxy (issue #115)
+    import cf_bypasser.browser.relay as relay_mod
+    monkeypatch.setattr(relay_mod, "_TLS_HANDSHAKE_TIMEOUT_SECONDS", 0.3)
+    relay = ProxyRelay(f"https://u:p@127.0.0.1:{upstream.port}")
+    await relay.start()
+    try:
+        status, body = await _connect_get(relay.url, f"127.0.0.1:{origin.port}")
+        assert status.startswith(b"HTTP/1.1 200") and body.endswith(b"origin-ok")
+    finally:
+        await relay.stop()
+
+
+async def test_percent_encoded_credentials_decoded(origin, upstream):
+    relay = ProxyRelay(f"http://%75:%70@127.0.0.1:{upstream.port}")  # "u":"p" percent-encoded
+    await relay.start()
+    try:
+        status, _ = await _connect_get(relay.url, f"127.0.0.1:{origin.port}")
+        assert status.startswith(b"HTTP/1.1 200")
+    finally:
+        await relay.stop()
+
+
+def test_https_with_credentials_needs_relay():
+    assert needs_relay("https://u:p@h:1")

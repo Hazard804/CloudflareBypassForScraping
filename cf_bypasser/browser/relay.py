@@ -1,18 +1,80 @@
 import asyncio
+import base64
 import logging
+import ssl
 from typing import Dict, Optional, Set, Tuple
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from python_socks.async_.asyncio import Proxy
 
 _HEAD_LIMIT = 64 * 1024
 _CONNECT_TIMEOUT_SECONDS = 20
+_TLS_HANDSHAKE_TIMEOUT_SECONDS = 5
+
+
+def _proxy_ssl_context() -> ssl.SSLContext:
+    return ssl.create_default_context()
+
+
+async def _read_head(reader: asyncio.StreamReader) -> bytes:
+    return await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), _CONNECT_TIMEOUT_SECONDS)
+
+
+async def _http_connect(upstream: str, host: str, port: int, use_tls: bool):
+    """CONNECT host:port through an http(s) proxy; returns (reader, writer) of the tunnel."""
+    parsed = urlsplit(upstream)
+    if use_tls:
+        try:
+            reader, writer = await asyncio.open_connection(
+                parsed.hostname, parsed.port, ssl=_proxy_ssl_context(), server_hostname=parsed.hostname,
+                ssl_handshake_timeout=_TLS_HANDSHAKE_TIMEOUT_SECONDS,
+            )
+        except (TimeoutError, asyncio.TimeoutError, ConnectionAbortedError) as e:
+            # a plain HTTP proxy just waits for a request line and never answers the ClientHello
+            raise ssl.SSLError("proxy did not complete a TLS handshake") from e
+    else:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(parsed.hostname, parsed.port), _CONNECT_TIMEOUT_SECONDS
+        )
+    try:
+        target = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+        lines = [f"CONNECT {target} HTTP/1.1", f"Host: {target}"]
+        if parsed.username is not None:
+            creds = f"{unquote(parsed.username)}:{unquote(parsed.password or '')}"
+            lines.append("Proxy-Authorization: Basic " + base64.b64encode(creds.encode()).decode())
+        writer.write(("\r\n".join(lines) + "\r\n\r\n").encode())
+        await writer.drain()
+        status = (await _read_head(reader)).split(b"\r\n", 1)[0]
+        if b" 200" not in status:
+            raise ConnectionError(status.decode("latin-1", "replace"))
+        return reader, writer
+    except BaseException:
+        writer.close()
+        raise
+
+
+async def open_upstream(upstream: str, host: str, port: int):
+    """Tunnel to host:port through the upstream proxy. Never connects directly."""
+    scheme = urlsplit(upstream).scheme.lower()
+    if scheme == "http":
+        return await _http_connect(upstream, host, port, use_tls=False)
+    if scheme == "https":
+        try:
+            return await _http_connect(upstream, host, port, use_tls=True)
+        except ssl.SSLCertVerificationError:
+            raise
+        except ssl.SSLError:
+            # the proxy doesn't speak TLS at all (providers often write https:// for plain HTTP);
+            # a certificate failure above is NOT retried, so credentials never go out in cleartext
+            return await _http_connect(upstream, host, port, use_tls=False)
+    sock = await Proxy.from_url(upstream).connect(host, port, timeout=_CONNECT_TIMEOUT_SECONDS)
+    return await asyncio.open_connection(sock=sock)
 
 
 def needs_relay(proxy: str) -> bool:
-    """Chrome can't authenticate per-context proxies or speak SOCKS auth, so those go through a relay."""
+    """Credentials, SOCKS and https:// (TLS-or-plain detection) go through the local relay."""
     parsed = urlsplit(proxy)
-    return bool(parsed.username) or parsed.scheme.lower().startswith("socks")
+    return bool(parsed.username) or parsed.scheme.lower() in ("https", "socks4", "socks5")
 
 
 async def _pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -103,8 +165,7 @@ class ProxyRelay:
 
         try:
             # never fall back to a direct connection: that would leak the real IP
-            sock = await Proxy.from_url(self.upstream).connect(host, port, timeout=_CONNECT_TIMEOUT_SECONDS)
-            up_reader, up_writer = await asyncio.open_connection(sock=sock)
+            up_reader, up_writer = await open_upstream(self.upstream, host, port)
         except Exception as e:
             logging.warning(f"Relay upstream connect to {host}:{port} failed: {e}")
             writer.write(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
