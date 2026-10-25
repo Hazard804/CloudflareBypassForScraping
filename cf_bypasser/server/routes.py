@@ -173,6 +173,43 @@ def setup_routes(app: FastAPI):
             logger.error(f"Error getting HTML content for {url}: {e}")
             raise HTTPException(status_code=500, detail="Internal server error")
 
+    @app.get("/fetch", responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}})
+    async def fetch(
+        request: Request,
+        url: Optional[str] = Query(None, description="URL of the resource (PDF, image, JSON...) to download"),
+        proxy: Optional[str] = Query(None, description="Proxy URL (optional)"),
+        bypassCookieCache: bool = Query(False, description="Force fresh cookie generation"),
+        bypasser: CFBypasser = Depends(get_bypasser),
+    ):
+        """Raw bytes of a URL fetched by the browser after bypassing Cloudflare, or mirror when x-hostname is present."""
+        if _validate_request(request, url, proxy):
+            return await mirror_request(request, "fetch", get_mirror())
+
+        try:
+            start_time = time.time()
+            data = await bypasser.fetch_bytes(url, proxy, bypass_cache=bypassCookieCache)
+            if not data:
+                raise HTTPException(status_code=500, detail="Failed to bypass Cloudflare protection")
+
+            generation_time = int((time.time() - start_time) * 1000)
+            logger.info(f"Fetched {len(data['body'])} bytes ({data['content_type']}) from {url} in {generation_time}ms")
+            return Response(
+                content=data["body"],
+                status_code=data["status_code"],
+                media_type=data["content_type"],
+                headers={
+                    "x-cf-bypasser-cookies": str(len(data["cookies"])),
+                    "x-cf-bypasser-user-agent": data["user_agent"],
+                    "x-cf-bypasser-final-url": data["url"],
+                    "x-processing-time-ms": str(generation_time),
+                },
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error fetching {url}: {e}")
+            raise HTTPException(status_code=500, detail="Internal server error")
+
     @app.post("/cache/clear", response_model=CacheClearResponse, responses={500: {"model": ErrorResponse}})
     async def clear_cache(
         bypasser: CFBypasser = Depends(get_bypasser),

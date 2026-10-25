@@ -10,6 +10,7 @@ from cf_bypasser.cache.cookie_cache import CookieCache
 from cf_bypasser.core import challenge
 from cf_bypasser.utils.constants import (
     DEFAULT_CACHE_FILE,
+    FETCH_MAX_BYTES,
     IP_CHECK_ENABLED,
     JOB_TIMEOUT_SECONDS,
 )
@@ -105,26 +106,30 @@ class CFBypasser:
         url: str,
         proxy_server: Optional[str],
         cached_cookies: Optional[Dict[str, str]],
-        want_html: bool,
+        mode: str,
     ) -> Tuple[Optional[Dict[str, Any]], bool]:
-        """Runs in a worker thread: one disposable context, solve, extract. Returns (data, cf_detected)."""
+        """Runs in a worker thread: one disposable context, solve, extract. mode: cookies | html | fetch."""
         with BrowserContextSession(browser, proxy_server) as session:
             if cached_cookies:
                 self.log_message("Restoring cached cookies...")
                 session.set_cookies(cached_cookies, url)
-            result = challenge.solve(session.tab, url, self.log_message)
+            # a binary URL would trigger a download, so solve on the origin and fetch from the page
+            target = challenge.origin_of(url) if mode == "fetch" else url
+            result = challenge.solve(session.tab, target, self.log_message)
             if not result.success:
                 return None, result.cf_detected
             data: Dict[str, Any] = {}
-            if want_html:
+            if mode == "html":
                 data["html"] = challenge.stable_html(session.tab)
                 data["url"] = session.tab.url
                 data["status_code"] = result.status
+            elif mode == "fetch":
+                data.update(challenge.fetch_in_page(session.tab, url, FETCH_MAX_BYTES))
             data["cookies"] = session.get_cookies()
             data["user_agent"] = session.user_agent()
             return data, result.cf_detected
 
-    async def _run_in_browser(self, url, proxy, key, *, restore_cookies: bool, want_html: bool):
+    async def _run_in_browser(self, url, proxy, key, *, restore_cookies: bool, mode: str):
         """Lease a browser, solve in a fresh context, cache trustworthy cookies. Returns data dict or None."""
         cached_cookies = None
         if restore_cookies:
@@ -139,7 +144,7 @@ class CFBypasser:
             async with self.pool.lease() as slot:
                 try:
                     data, cf_detected = await asyncio.wait_for(
-                        asyncio.to_thread(self._job, slot.browser, url, proxy_server, cached_cookies, want_html),
+                        asyncio.to_thread(self._job, slot.browser, url, proxy_server, cached_cookies, mode),
                         timeout=JOB_TIMEOUT_SECONDS,
                     )
                 except BaseException:
@@ -182,14 +187,20 @@ class CFBypasser:
                     return {"cookies": cached.cookies, "user_agent": cached.user_agent}
 
             self.log_message(f"Generating fresh cookies for {key}...")
-            return await self._run_in_browser(url, proxy, key, restore_cookies=False, want_html=False)
+            return await self._run_in_browser(url, proxy, key, restore_cookies=False, mode="cookies")
 
     async def get_or_generate_html(self, url: str, proxy: Optional[str] = None, bypass_cache: bool = False) -> Optional[Dict[str, Any]]:
         """Get HTML content along with cookies (cached or fresh)."""
         key = cache_key(urlparse(url).netloc, proxy)
         self.log_message(f"Getting HTML content for {url}...")
         # no in-flight lock: HTML is fetched fresh per request, bounded by the pool size
-        return await self._run_in_browser(url, proxy, key, restore_cookies=not bypass_cache, want_html=True)
+        return await self._run_in_browser(url, proxy, key, restore_cookies=not bypass_cache, mode="html")
+
+    async def fetch_bytes(self, url: str, proxy: Optional[str] = None, bypass_cache: bool = False) -> Optional[Dict[str, Any]]:
+        """Raw response bytes (PDFs, images, JSON...) fetched by the browser after clearing the challenge."""
+        key = cache_key(urlparse(url).netloc, proxy)
+        self.log_message(f"Fetching bytes for {url}...")
+        return await self._run_in_browser(url, proxy, key, restore_cookies=not bypass_cache, mode="fetch")
 
     async def cleanup(self) -> None:
         """Quit all pooled browsers and close proxy relays."""

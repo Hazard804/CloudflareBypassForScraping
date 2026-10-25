@@ -90,7 +90,8 @@ def make_bypasser(tmp_path, size=2, **kw):
 
 
 def fake_job(cookies, cf_detected=False, delay=0.0, tracker=None):
-    def job(self, browser, url, proxy_server, cached_cookies, want_html):
+    def job(self, browser, url, proxy_server, cached_cookies, mode):
+        want_html = mode == "html"
         if tracker is not None:
             tracker.append((proxy_server, cached_cookies))
         if delay:
@@ -287,7 +288,7 @@ async def test_concurrency_capped_by_pool_size(tmp_path, monkeypatch):
     import threading
     lock = threading.Lock()
 
-    def job(self, browser, url, proxy_server, cached_cookies, want_html):
+    def job(self, browser, url, proxy_server, cached_cookies, mode):
         nonlocal live, peak
         with lock:
             live += 1
@@ -415,6 +416,37 @@ async def test_invalid_proxy_never_runs_direct(tmp_path, monkeypatch):
     monkeypatch.setattr(CFBypasser, "_job", fake_job({"s": "1"}, tracker=calls))
     assert await b.get_or_generate_cookies("https://x.com", proxy="not-a-valid-proxy") is None
     assert calls == []
+    await b.cleanup()
+
+
+def test_fetch_in_page_decodes_bytes():
+    import base64
+    tab = FakeTab()
+    tab.run_js = lambda script, *a, **k: {"status": 200, "type": "application/pdf", "url": "https://x.com/a.pdf",
+                                      "body": base64.b64encode(b"%PDF\x00\xff").decode()}
+    out = challenge.fetch_in_page(tab, "https://x.com/a.pdf", max_bytes=100)
+    assert out == {"status_code": 200, "content_type": "application/pdf", "url": "https://x.com/a.pdf", "body": b"%PDF\x00\xff"}
+
+
+def test_fetch_in_page_too_large_raises():
+    tab = FakeTab()
+    tab.run_js = lambda script, *a, **k: {"error": "too large", "size": 999}
+    with pytest.raises(ValueError):
+        challenge.fetch_in_page(tab, "https://x.com/big", max_bytes=10)
+
+
+def test_origin_of():
+    assert challenge.origin_of("https://a.com:8443/p/x.pdf?q=1") == "https://a.com:8443/"
+
+
+async def test_fetch_bytes_solves_on_origin_and_caches(tmp_path, monkeypatch):
+    b = make_bypasser(tmp_path)
+    await b.start()
+    calls = []
+    monkeypatch.setattr(CFBypasser, "_job", fake_job({"cf_clearance": "c"}, cf_detected=True, tracker=calls))
+    data = await b.fetch_bytes("https://example.com/a.pdf")
+    assert data is not None
+    assert b.cookie_cache.get(cache_key("example.com", None)) is not None
     await b.cleanup()
 
 

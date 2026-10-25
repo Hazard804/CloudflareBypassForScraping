@@ -32,6 +32,7 @@ BROWSER_PATH = os.environ.get("CF_BROWSER_PATH") or None  # Brave; auto-detected
 BROWSER_NO_SANDBOX = _env_bool("CF_BROWSER_NO_SANDBOX", False)
 JOB_TIMEOUT_SECONDS = float(os.environ.get("CF_JOB_TIMEOUT", "90"))
 BROWSER_MAX_JOBS = int(os.environ.get("CF_BROWSER_MAX_JOBS", "200"))
+FETCH_MAX_BYTES = int(os.environ.get("CF_FETCH_MAX_BYTES", str(50 * 1024 * 1024)))
 SESSION_TIMEOUT_SECONDS = 30
 MIRROR_MAX_RETRIES = int(os.environ.get("CF_MIRROR_MAX_RETRIES", "2"))
 MIRROR_RETRY_BACKOFF_SECONDS = float(os.environ.get("CF_MIRROR_RETRY_DELAY", "0.5"))

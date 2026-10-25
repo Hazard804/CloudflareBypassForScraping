@@ -1,7 +1,10 @@
+import base64
+import json
 import logging
 from collections import namedtuple
 from time import monotonic, sleep
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Dict, Optional
+from urllib.parse import urlsplit
 
 from DrissionPage._elements.chromium_element import ChromiumElement
 from DrissionPage._pages.chromium_frame import ChromiumFrame
@@ -172,3 +175,36 @@ def stable_html(tab: Any) -> str:
         stable = stable + 1 if len(current) == len(html) else 0
         html = current
     return html
+
+
+# returns a JSON string: run_js hands back objects by reference, strings by value
+_FETCH_JS = """
+async function(url, maxBytes) {
+    const r = await fetch(url, {credentials: 'include', redirect: 'follow'});
+    const buf = await r.arrayBuffer();
+    if (buf.byteLength > maxBytes) return JSON.stringify({error: 'too large', size: buf.byteLength});
+    const bytes = new Uint8Array(buf);
+    let bin = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    return JSON.stringify({status: r.status, type: r.headers.get('content-type'), url: r.url, body: btoa(bin)});
+}
+"""
+
+
+def origin_of(url: str) -> str:
+    parts = urlsplit(url)
+    return f"{parts.scheme}://{parts.netloc}/"
+
+
+def fetch_in_page(tab: Any, url: str, max_bytes: int) -> Dict[str, Any]:
+    """Fetch url from inside the page: browser cookies, TLS fingerprint and JS-set state apply."""
+    raw = tab.run_js(_FETCH_JS, url, max_bytes, timeout=DEFAULT_TIMEOUT_MS / 1000)
+    result = json.loads(raw) if isinstance(raw, str) else raw
+    if result.get("error"):
+        raise ValueError(f"fetch failed: {result['error']} ({result.get('size')} bytes)")
+    return {
+        "status_code": result["status"],
+        "content_type": result.get("type") or "application/octet-stream",
+        "url": result["url"],
+        "body": base64.b64decode(result["body"]),
+    }

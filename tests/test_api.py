@@ -109,6 +109,36 @@ def test_mirror_headers_unchanged(api, monkeypatch):
     assert "x-cf-bypasser-version" in r.headers and "x-processing-time-ms" in r.headers
 
 
+def test_fetch_returns_raw_bytes(api, monkeypatch):
+    async def fake(self, url, proxy=None, bypass_cache=False):
+        return {"cookies": {}, "user_agent": "UA", "body": b"%PDF-1.7\x00\xff", "status_code": 200,
+                "content_type": "application/pdf", "url": url}
+    monkeypatch.setattr(CFBypasser, "fetch_bytes", fake)
+    r = api.get("/fetch", params={"url": "https://example.com/a.pdf"})
+    assert r.status_code == 200 and r.content == b"%PDF-1.7\x00\xff"
+    assert r.headers["content-type"] == "application/pdf"
+    assert r.headers["x-cf-bypasser-final-url"] == "https://example.com/a.pdf"
+
+
+def test_fetch_passes_upstream_status(api, monkeypatch):
+    async def fake(self, url, proxy=None, bypass_cache=False):
+        return {"cookies": {}, "user_agent": "UA", "body": b"nope", "status_code": 404,
+                "content_type": "text/plain", "url": url}
+    monkeypatch.setattr(CFBypasser, "fetch_bytes", fake)
+    assert api.get("/fetch", params={"url": "https://example.com/x"}).status_code == 404
+
+
+def test_fetch_rejects_unsafe_url(api):
+    assert api.get("/fetch", params={"url": "http://127.0.0.1/x"}).status_code == 400
+
+
+def test_fetch_failure_is_500(api, monkeypatch):
+    async def fake(self, url, proxy=None, bypass_cache=False):
+        return None
+    monkeypatch.setattr(CFBypasser, "fetch_bytes", fake)
+    assert api.get("/fetch", params={"url": "https://example.com/x"}).status_code == 500
+
+
 def test_cache_endpoints_unchanged(api):
     assert set(api.get("/cache/stats").json()) == {"cached_entries", "total_hostnames", "hostnames"}
     assert set(api.post("/cache/clear").json()) == {"status", "message"}
