@@ -206,3 +206,27 @@ def test_find_brave_none_installed(monkeypatch, tmp_path):
 def test_non_live_tests_cannot_launch_real_browsers():
     import cf_bypasser.browser.pool as pool_mod
     assert pool_mod.launch_chromium.__name__ == "_FakeBrowser"
+
+
+def test_browser_args_use_locale():
+    from cf_bypasser.browser.pool import browser_args
+    args = browser_args("de-DE")
+    assert "--lang=de-DE" in args
+    assert "--accept-lang=de-DE,de" in args
+
+
+def test_env_settings(monkeypatch):
+    import importlib
+    import cf_bypasser.utils.constants as c
+    monkeypatch.setenv("CF_LOCALE", "tr-TR")
+    monkeypatch.setenv("CF_MIRROR_RETRY_DELAY", "2.5")
+    monkeypatch.setenv("CF_MIRROR_MAX_RETRIES", "4")
+    try:
+        importlib.reload(c)
+        assert c.LOCALE == "tr-TR"
+        assert c.CHROME_HEADERS["Accept-Language"] == "tr-TR,tr;q=0.9"
+        assert c.MIRROR_RETRY_BACKOFF_SECONDS == 2.5
+        assert c.MIRROR_MAX_RETRIES == 4
+    finally:
+        monkeypatch.undo()
+        importlib.reload(c)

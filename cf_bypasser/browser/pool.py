@@ -15,6 +15,8 @@ from cf_bypasser.utils.constants import (
     BROWSER_NO_SANDBOX,
     BROWSER_PATH,
     HEADLESS,
+    LOCALE,
+    accept_language,
 )
 
 _BRAVE_CANDIDATES = (
@@ -58,17 +60,22 @@ def launch_chromium(headless: bool = HEADLESS, browser_path: Optional[str] = Non
     return browser
 
 
+def browser_args(locale: str) -> List[str]:
+    return [
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-dev-shm-usage",
+        f"--lang={locale}",
+        # plain list: the browser adds the q= weights itself
+        f"--accept-lang={accept_language(locale).replace(';q=0.9', '')}",
+    ]
+
+
 def _launch(headless: bool, browser_path: str, user_agent: Optional[str]) -> Chromium:
     co = ChromiumOptions(read_file=False).auto_port().headless(headless).set_browser_path(browser_path)
     if user_agent:
         co.set_user_agent(user_agent)
-    for arg in (
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--disable-dev-shm-usage",
-        "--lang=en-US",
-        "--accept-lang=en-US",
-    ):
+    for arg in browser_args(LOCALE):
         co.set_argument(arg)
     if BROWSER_NO_SANDBOX or (hasattr(os, "geteuid") and os.geteuid() == 0):
         co.set_argument("--no-sandbox")

@@ -33,12 +33,19 @@ BROWSER_NO_SANDBOX = _env_bool("CF_BROWSER_NO_SANDBOX", False)
 JOB_TIMEOUT_SECONDS = float(os.environ.get("CF_JOB_TIMEOUT", "90"))
 BROWSER_MAX_JOBS = int(os.environ.get("CF_BROWSER_MAX_JOBS", "200"))
 SESSION_TIMEOUT_SECONDS = 30
-MIRROR_MAX_RETRIES = 2
-MIRROR_RETRY_BACKOFF_SECONDS = 0.5
+MIRROR_MAX_RETRIES = int(os.environ.get("CF_MIRROR_MAX_RETRIES", "2"))
+MIRROR_RETRY_BACKOFF_SECONDS = float(os.environ.get("CF_MIRROR_RETRY_DELAY", "0.5"))
 MAX_SESSIONS = int(os.environ.get("CF_MAX_SESSIONS", "128"))
+LOCALE = os.environ.get("CF_LOCALE", "en-US")
+
+
+def accept_language(locale: str) -> str:
+    return f"{locale},{locale.split('-')[0]};q=0.9" if "-" in locale else locale
+
+
 CHROME_HEADERS = {
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-    'Accept-Language': 'en-US,en;q=0.9',
+    'Accept-Language': accept_language(LOCALE),
     'Accept-Encoding': 'gzip, deflate, br, zstd',
     'Connection': 'keep-alive',
     'Upgrade-Insecure-Requests': '1',
