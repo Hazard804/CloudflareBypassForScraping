@@ -21,7 +21,7 @@ from cf_bypasser.utils.constants import (
     CONTEXT_CLOSE_TIMEOUT_SECONDS,
     DEFAULT_MAX_RETRIES,
     DEFAULT_CACHE_FILE,
-    MAX_CONCURRENT_BROWSERS,
+    BROWSER_COUNT as MAX_CONCURRENT_BROWSERS,
     IP_CHECK_ENABLED,
 )
 from cf_bypasser.utils.ipcheck import get_exit_ip

@@ -1,0 +1,175 @@
+import asyncio
+import threading
+
+import pytest
+
+from cf_bypasser.browser.pool import BrowserPool
+
+pytestmark = pytest.mark.asyncio(loop_scope="function")
+
+
+class _States:
+    def __init__(self):
+        self.is_alive = True
+
+
+class FakeBrowser:
+    def __init__(self):
+        self.states = _States()
+        self.process_id = None
+        self.quit_calls = 0
+
+    def quit(self, *a, **k):
+        self.quit_calls += 1
+        self.states.is_alive = False
+
+
+class Launcher:
+    def __init__(self, fail_on=None, gate: threading.Event = None):
+        self.count = 0
+        self.browsers = []
+        self.fail_on = fail_on
+        self.gate = gate
+
+    def __call__(self):
+        self.count += 1
+        if self.fail_on == self.count:
+            raise RuntimeError("launch failed")
+        if self.gate is not None and self.count > 1:
+            self.gate.wait(5)
+        b = FakeBrowser()
+        self.browsers.append(b)
+        return b
+
+
+async def _settle(pool):
+    await asyncio.gather(*list(pool._bg), return_exceptions=True)
+
+
+async def test_start_launches_size_browsers():
+    launcher = Launcher()
+    pool = BrowserPool(3, launcher=launcher)
+    await pool.start()
+    assert launcher.count == 3
+    assert pool.size == 3
+    await pool.stop()
+
+
+async def test_lease_blocks_when_exhausted():
+    pool = BrowserPool(1, launcher=Launcher())
+    await pool.start()
+    async with pool.lease():
+        with pytest.raises(asyncio.TimeoutError):
+            async with asyncio.timeout(0.1):
+                async with pool.lease():
+                    pass
+    async with asyncio.timeout(1):
+        async with pool.lease():
+            pass
+    await pool.stop()
+
+
+async def test_dead_browser_relaunched_on_release():
+    launcher = Launcher()
+    pool = BrowserPool(1, launcher=launcher)
+    await pool.start()
+    async with pool.lease() as slot:
+        old = slot.browser
+        old.states.is_alive = False
+    await _settle(pool)
+    assert launcher.count == 2
+    assert old.quit_calls == 1
+    async with pool.lease() as slot:
+        assert slot.browser is not old
+    await pool.stop()
+
+
+async def test_timeout_poisons_and_relaunches():
+    launcher = Launcher()
+    pool = BrowserPool(1, launcher=launcher)
+    await pool.start()
+    async with pool.lease() as slot:
+        slot.poisoned = True
+    await _settle(pool)
+    assert launcher.count == 2
+    async with pool.lease() as slot:
+        assert slot.poisoned is False
+    await pool.stop()
+
+
+async def test_recycle_after_max_jobs():
+    launcher = Launcher()
+    pool = BrowserPool(1, launcher=launcher, max_jobs=2)
+    await pool.start()
+    for _ in range(2):
+        async with pool.lease():
+            pass
+    await _settle(pool)
+    assert launcher.count == 2
+    await pool.stop()
+
+
+async def test_stop_quits_all_even_when_leased():
+    launcher = Launcher()
+    pool = BrowserPool(2, launcher=launcher)
+    await pool.start()
+    async with pool.lease():
+        await pool.stop()
+    assert all(b.quit_calls >= 1 for b in launcher.browsers)
+
+
+async def test_start_failure_quits_partial():
+    launcher = Launcher(fail_on=3)
+    pool = BrowserPool(3, launcher=launcher)
+    with pytest.raises(RuntimeError):
+        await pool.start()
+    assert len(launcher.browsers) == 2
+    assert all(b.quit_calls == 1 for b in launcher.browsers)
+
+
+async def test_stats_tracks_states():
+    pool = BrowserPool(3, launcher=Launcher())
+    await pool.start()
+    async with pool.lease():
+        s = pool.stats()
+        assert (s["total"], s["available"], s["busy"], s["restarting"]) == (3, 2, 1, 0)
+        assert len(s["browsers"]) == 3
+    assert pool.stats()["available"] == 3
+    await pool.stop()
+
+
+async def test_stats_shows_restarting():
+    gate = threading.Event()
+    pool = BrowserPool(1, launcher=Launcher(gate=gate))
+    await pool.start()
+    async with pool.lease() as slot:
+        slot.poisoned = True
+    await asyncio.sleep(0.05)
+    s = pool.stats()
+    assert s["restarting"] == 1 and s["available"] == 0
+    assert s["browsers"][0]["pid"] is None and s["browsers"][0]["state"] == "restarting"
+    gate.set()
+    await _settle(pool)
+    assert pool.stats()["available"] == 1
+    await pool.stop()
+
+
+async def test_relaunch_failure_retries_until_healthy(monkeypatch):
+    import cf_bypasser.browser.pool as pool_mod
+    monkeypatch.setattr(pool_mod, "_RELAUNCH_BACKOFF_SECONDS", (0.01, 0.01))
+    launcher = Launcher(fail_on=2)
+    pool = BrowserPool(1, launcher=launcher)
+    await pool.start()
+    async with pool.lease() as slot:
+        slot.poisoned = True
+    await _settle(pool)
+    assert launcher.count == 3
+    assert pool.stats()["available"] == 1
+    await pool.stop()
+
+
+def test_kill_tree_ignores_non_browser_pid():
+    import os
+    from cf_bypasser.browser.pool import _kill_tree
+    _kill_tree(os.getpid())  # pytest's own process: must survive
+    assert True
