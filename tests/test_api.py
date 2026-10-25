@@ -41,13 +41,20 @@ def test_browsers_endpoint(api):
     assert set(body["browsers"][0]) == {"index", "state", "jobs", "pid"}
 
 
-def test_browsers_endpoint_not_mirrored(api):
-    r = api.get("/browsers", headers={"x-hostname": "example.com"})
-    assert r.status_code == 200 and "total" in r.json()
+def test_browsers_with_x_hostname_is_mirrored(api, monkeypatch):
+    # a target's own /browsers path must stay reachable through mirroring
+    async def fake(self, **kw):
+        return 200, {"content-type": "text/plain"}, b"target-browsers:" + kw["path"].encode()
+    monkeypatch.setattr(RequestMirror, "mirror_request", fake)
+    assert api.get("/browsers", headers={"x-hostname": "example.com"}).content == b"target-browsers:/browsers"
+    assert api.get("/browsers/x", headers={"x-hostname": "example.com"}).content == b"target-browsers:/browsers/x"
 
 
-def test_browsers_path_reserved_in_mirror(api):
-    assert api.get("/browsers/x", headers={"x-hostname": "example.com"}).status_code == 404
+def test_job_timeout_covers_inner_timeouts():
+    from cf_bypasser.utils import constants as c
+    # navigation + challenge polling + doc_loaded in stable_html + DOM settle + tab attach
+    inner = 2 * c.DEFAULT_TIMEOUT_MS / 1000 + c.CHALLENGE_TIMEOUT_SECONDS + c.HTML_SETTLE_MAX_SECONDS + 5
+    assert c.JOB_TIMEOUT_SECONDS > inner
 
 
 def test_openapi_paths_and_params_unchanged(api):

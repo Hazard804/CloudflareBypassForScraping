@@ -132,6 +132,7 @@ class CFBypasser:
 
     async def _run_in_browser(self, url, proxy, key, *, restore_cookies: bool, mode: str):
         """Lease a browser, solve in a fresh context, cache trustworthy cookies. Returns data dict or None."""
+        self.cookie_cache.clear_expired()
         cached_cookies = None
         if restore_cookies:
             cached = await self._read_valid_cache(key, proxy)

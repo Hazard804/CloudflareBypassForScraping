@@ -310,3 +310,8 @@ def test_failed_launch_kills_what_it_spawned(monkeypatch):
         pool_mod._launch(True, "/bin/true", None)
     assert spawned["proc"].wait(5) is not None
     assert not os.path.exists(spawned["dir"])
+
+
+def test_browser_args_block_webrtc_ip_leak():
+    from cf_bypasser.browser.pool import browser_args
+    assert "--force-webrtc-ip-handling-policy=disable_non_proxied_udp" in browser_args("en-US")

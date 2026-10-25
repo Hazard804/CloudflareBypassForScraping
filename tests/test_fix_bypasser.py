@@ -529,6 +529,16 @@ def test_open_frame_failure_unregisters(monkeypatch):
     assert "F2" not in RealFrame._Frames
 
 
+async def test_browser_job_clears_expired_cache_entries(tmp_path, monkeypatch):
+    b = make_bypasser(tmp_path)
+    await b.start()
+    b.cookie_cache.set("old", {"a": "1"}, "UA", ttl_minutes=-1)
+    monkeypatch.setattr(CFBypasser, "_job", fake_job({"s": "1"}))
+    await b.get_or_generate_html("https://x.com")
+    assert "old" not in b.cookie_cache.cache
+    await b.cleanup()
+
+
 def test_cache_key_no_collision():
     assert cache_key("foo.com", "bar") != cache_key("foo.comb", "ar")
 

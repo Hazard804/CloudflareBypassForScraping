@@ -264,8 +264,10 @@ def setup_routes(app: FastAPI):
             raise HTTPException(status_code=500, detail="Internal server error")
 
     @app.get("/browsers", response_model=BrowserPoolResponse, responses={500: {"model": ErrorResponse}})
-    async def browsers(bypasser: CFBypasser = Depends(get_bypasser)):
-        """Pool status: how many browsers are available, busy or restarting (per worker)."""
+    async def browsers(request: Request, bypasser: CFBypasser = Depends(get_bypasser)):
+        """Pool status: how many browsers are available, busy or restarting (per worker), or mirror when x-hostname is present."""
+        if any(key.lower() == "x-hostname" for key in request.headers.keys()):
+            return await mirror_request(request, "browsers", get_mirror())
         return BrowserPoolResponse(**bypasser.pool.stats())
 
     @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
@@ -276,7 +278,7 @@ def setup_routes(app: FastAPI):
     ):
         """Dynamic request mirroring endpoint keyed off the x-hostname header."""
 
-        if path.startswith(("cache/", "browsers/")):
+        if path.startswith("cache/"):
             raise HTTPException(status_code=404, detail="Not found")
 
         try:

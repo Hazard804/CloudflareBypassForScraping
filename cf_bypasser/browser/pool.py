@@ -69,6 +69,8 @@ def browser_args(locale: str) -> List[str]:
         "--no-first-run",
         "--no-default-browser-check",
         "--disable-dev-shm-usage",
+        # STUN over UDP bypasses HTTP/SOCKS proxies and would expose the real IP
+        "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
         f"--lang={locale}",
         # plain list: the browser adds the q= weights itself
         f"--accept-lang={accept_language(locale).replace(';q=0.9', '')}",
