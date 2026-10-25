@@ -1,57 +1,51 @@
-FROM ubuntu:rolling
-
+FROM python:3.12-slim AS brave
 ENV DEBIAN_FRONTEND=noninteractive
-ENV CLOAKBROWSER_AUTO_UPDATE=false
-ENV PYTHONUNBUFFERED=1
+# builder only: the final image gets Brave plus just the shared libs it loads, not the full GTK/X apt closure
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl ca-certificates gnupg \
+    && curl -fsSLo /usr/share/keyrings/brave-browser-archive-keyring.gpg \
+        https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/brave-browser-archive-keyring.gpg] https://brave-browser-apt-release.s3.brave.com/ stable main" \
+        > /etc/apt/sources.list.d/brave-browser-release.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends brave-browser fonts-liberation tini
+# collect only the shared libs Brave links against, plus NSS modules it dlopens at runtime
+RUN mkdir -p /out/lib && find /opt/brave.com/brave/locales -type f ! -name 'en-US.pak' -delete \
+    && for bin in /opt/brave.com/brave/brave /opt/brave.com/brave/chrome_crashpad_handler /opt/brave.com/brave/*.so; do \
+         ldd "$bin" 2>/dev/null | awk '/=> \//{print $3}'; done | sort -u > /tmp/libs \
+    && (ls /usr/lib/*-linux-gnu/libsoftokn3.so /usr/lib/*-linux-gnu/libfreebl*.so /usr/lib/*-linux-gnu/libnssckbi.so \
+          /usr/lib/*-linux-gnu/nss/*.so 2>/dev/null >> /tmp/libs || true) \
+    && grep -v -e '/libc\.so' -e '/libm\.so' -e 'ld-linux' -e '/libpthread' -e '/libdl\.' -e '/librt\.' /tmp/libs \
+       | xargs -n1 realpath | sort -u | xargs -I{} cp -L --parents {} /out/lib/ \
+    && cp -a --parents /etc/fonts /usr/share/fonts/truetype/liberation /usr/share/fontconfig /usr/bin/tini /out/lib/
 
-USER root
-RUN apt-get update && apt-get install -y \
-    python3-pip \
-    python3-venv \
-    wget \
-    curl \
-    ca-certificates \
-    xvfb \
-    fonts-liberation \
-    fonts-noto-color-emoji \
-    libnss3 \
-    libnspr4 \
-    libatk1.0-0 \
-    libatk-bridge2.0-0 \
-    libcups2 \
-    libdrm2 \
-    libxkbcommon0 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxfixes3 \
-    libxrandr2 \
-    libgbm1 \
-    libpango-1.0-0 \
-    libcairo2 \
-    libasound2t64 \
-    libatspi2.0-0 \
-    libx11-6 \
-    libxcb1 \
-    libxext6 \
-    libgtk-3-0 \
-    && rm -rf /var/lib/apt/lists/*
-
+FROM python:3.12-slim
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
+COPY --from=brave /out/lib/ /
+COPY --from=brave /opt/brave.com/brave /opt/brave.com/brave
+# fail the build, not the first request, if Brave can't start with the trimmed library set
+RUN ldconfig && useradd --create-home --uid 1000 app \
+    && ! ldd /opt/brave.com/brave/brave | grep "not found" \
+    && /opt/brave.com/brave/brave --version
 WORKDIR /app
-COPY . .
+ARG INSTALL_TEST_DEPS=0
+COPY server_requirements.txt .
+COPY tests/test-requirements.txt tests/
+RUN pip install -r server_requirements.txt \
+    && if [ "$INSTALL_TEST_DEPS" = "1" ]; then pip install -r tests/test-requirements.txt; \
+       else pip uninstall -y pip setuptools wheel; fi \
+    && find /usr/local/lib/python3.12 -name '__pycache__' -prune -exec rm -rf {} +
+COPY cf_bypasser cf_bypasser
+COPY server.py healthcheck.py ./
+# the cookie cache file is written next to the app
+RUN chown -R app:app /app
+ENV CF_BROWSER_PATH=/opt/brave.com/brave/brave CF_HEADLESS=true CF_BROWSER_NO_SANDBOX=true CF_BROWSERS=3 PORT=8000
+USER app
+EXPOSE 8000
 
-RUN chmod +x /app/docker-entrypoint.sh
-RUN chown -R ubuntu:ubuntu /app
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+    CMD python healthcheck.py
 
-USER ubuntu
-
-RUN python3 -m venv /app/venv
-ENV PATH="/app/venv/bin:$PATH"
-
-RUN pip install --upgrade pip
-RUN pip install --no-cache-dir -r server_requirements.txt
-
-# Download the patched stealth Chromium into the ubuntu user's cache
-RUN python3 -c "import cloakbrowser; print(cloakbrowser.ensure_binary())"
-
-# Browser must run headed for managed Turnstile; the entrypoint provides Xvfb
-CMD ["/app/docker-entrypoint.sh"]
+# tini as PID 1 reaps Brave helper processes re-parented on every browser restart.
+# args pass through: docker run IMAGE --browsers 5 (change the port with -e PORT=9000)
+ENTRYPOINT ["/usr/bin/tini", "--", "python", "server.py"]

@@ -1,6 +1,6 @@
 # Cloudflare Bypass for Scraping
 
-> ⭐ **Thank you for 1,800+ stars!** Introducing **Version 2.0** with enhanced request mirroring, improved caching and better reliability for bypassing Cloudflare protection.
+> ⭐ **Thank you for 2,500+ stars!** Introducing **Version 3.0**: a reusable pool of headless Brave browsers driven by DrissionPage, per-request proxies (HTTP, HTTPS, SOCKS) without restarting the browser, faster Turnstile solving, a `/fetch` endpoint for files, optional `x-auth-token` auth and a lighter Docker image.
 
 Bypass Cloudflare protection with ease. Supports cookie generation and request mirroring for any HTTP method. 
 
@@ -37,7 +37,7 @@ curl "http://localhost:8000/api/data" -H "x-hostname: cf-protected-website.com"
 
 # How it works
 
-Two ways to get past Cloudflare, both powered by a real stealth browser (a patched Chromium via CloakBrowser).
+Two ways to get past Cloudflare, both powered by a pool of real Brave browsers driven by DrissionPage and reused across requests.
 
 ## 🍪 Cookie generation — `/cookies`
 

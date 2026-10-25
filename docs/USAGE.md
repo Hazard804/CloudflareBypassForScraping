@@ -16,19 +16,55 @@ docker compose pull && docker compose up -d
 docker run -p 8000:8000 ghcr.io/sarperavci/cloudflarebypassforscraping:latest
 ```
 
+Images are published for `linux/amd64` and `linux/arm64`. Besides `latest`, every release `vX.Y.Z` is tagged `X.Y.Z`, `X.Y` and `X`, so you can pin a version (e.g. `:3.0.0` or `:3`).
+
 ### Manual
+Requires the [Brave browser](https://brave.com/linux/).
 ```bash
 pip install -r server_requirements.txt
-python server.py
+python server.py --browsers 3
 ```
 
-`server.py` accepts `--host`, `--port`, `--workers`, and `--log-level`.
+`server.py` accepts `--host`, `--port`, `--workers`, `--log-level`, `--browsers` (reused browsers per worker, default 3), `--headless`, `--enable-cache` (cookie caching is off by default) and `--auth-token`. The Docker image runs Brave headless; arguments pass through, e.g. `docker run -p 8000:8000 IMAGE --browsers 5`.
 
 ### Build from source
 ```bash
 docker build -t cloudflare-bypass .
 docker run -p 8000:8000 cloudflare-bypass
 ```
+
+## Authentication (optional)
+
+Off by default. Start the server with a token and every request must carry it:
+
+```bash
+python server.py --auth-token change-me            # or: docker run -e CF_AUTH_TOKEN=change-me ...
+curl -H "x-auth-token: change-me" "http://localhost:8000/cookies?url=https://example.com"
+```
+
+Requests without the header, or with a wrong value, get `401`. The `x-auth-token` header is stripped before mirrored requests reach the target site.
+
+## Raw bytes — `/fetch`
+
+Downloads any resource (PDF, image, JSON, ...) through the browser after clearing the challenge, and returns the original bytes with the upstream status code and `Content-Type`.
+
+```bash
+curl -o paper.pdf "http://localhost:8000/fetch?url=https://example.com/files/paper.pdf"
+```
+
+The browser clears Cloudflare on the URL's origin, then requests the resource from inside the page, so cookies, TLS fingerprint and JS-set state all apply. Accepts `proxy` and `bypassCookieCache` like `/html`. Size is capped by `CF_FETCH_MAX_BYTES`. Sites that put their own (non-Cloudflare) JavaScript gate in front of a file may still return that gate page.
+
+`/cookies` also accepts `bypassCookieCache=true` to ignore a still-valid cached cookie and solve again.
+
+## Browser pool status
+
+```bash
+$ curl http://localhost:8000/browsers
+{"total":3,"available":2,"busy":1,"restarting":0,
+ "browsers":[{"index":0,"state":"busy","jobs":12,"pid":4211}, ...]}
+```
+
+Counts are per worker process when running with `--workers > 1`.
 
 ## Request mirroring (any HTTP method)
 

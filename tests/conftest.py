@@ -2,8 +2,13 @@ import pytest
 import pytest_asyncio
 from fastapi.testclient import TestClient
 
-TEST_URL = "https://challenge.sarper.me"
-EXPECTED_SUCCESS_TEXT = "cloudflare challenged passed. You are now a free bot."
+import os
+from urllib.parse import urlparse
+
+# public Cloudflare-protected test site; override with CF_TEST_URL / CF_TEST_EXPECTED_TEXT
+TEST_URL = os.environ.get("CF_TEST_URL", "https://cloudflare.hackmap.win/")
+TEST_HOST = urlparse(TEST_URL).netloc
+EXPECTED_SUCCESS_TEXT = os.environ.get("CF_TEST_EXPECTED_TEXT", "OK YOU PASSED IT")
 SERVER_URL = "http://localhost:8000"
 CF_COOKIE_PREFIXES = ("cf_", "__cf")
 MIN_HTML_LENGTH = 50
@@ -17,8 +22,14 @@ def test_url():
 
 @pytest.fixture
 def expected_text():
-    """Provide the expected success text after bypass."""
+    """Text the page shows once past the challenge ("" = only check the bypass itself)."""
     return EXPECTED_SUCCESS_TEXT
+
+
+@pytest.fixture
+def test_host():
+    """Bare host of the test site, for x-hostname mirroring."""
+    return TEST_HOST
 
 
 @pytest.fixture
@@ -49,9 +60,11 @@ def client():
 
 @pytest_asyncio.fixture
 async def bypasser():
-    """Create a CloakBypasser instance for testing."""
-    from cf_bypasser.core.bypasser import CloakBypasser
-    instance = CloakBypasser(max_retries=5, log=True)
+    """Started CFBypasser backed by a real browser pool of one."""
+    from cf_bypasser.browser.pool import BrowserPool
+    from cf_bypasser.core.bypasser import CFBypasser
+    instance = CFBypasser(log=True, pool=BrowserPool(1), cache_enabled=True)
+    await instance.start()
     yield instance
     await instance.cleanup()
 
@@ -60,8 +73,10 @@ async def bypasser():
 # suite launches a browser once instead of per test.
 @pytest_asyncio.fixture(scope="session", loop_scope="session")
 async def shared_cookies():
-    from cf_bypasser.core.bypasser import CloakBypasser
-    instance = CloakBypasser(max_retries=5, log=True)
+    from cf_bypasser.browser.pool import BrowserPool
+    from cf_bypasser.core.bypasser import CFBypasser
+    instance = CFBypasser(log=True, pool=BrowserPool(1))
+    await instance.start()
     try:
         return await instance.get_or_generate_cookies(TEST_URL)
     finally:
@@ -70,9 +85,34 @@ async def shared_cookies():
 
 @pytest_asyncio.fixture(scope="session", loop_scope="session")
 async def shared_html():
-    from cf_bypasser.core.bypasser import CloakBypasser
-    instance = CloakBypasser(max_retries=5, log=True)
+    from cf_bypasser.browser.pool import BrowserPool
+    from cf_bypasser.core.bypasser import CFBypasser
+    instance = CFBypasser(log=True, pool=BrowserPool(1))
+    await instance.start()
     try:
         return await instance.get_or_generate_html(TEST_URL)
     finally:
         await instance.cleanup()
+
+
+class _FakeStates:
+    is_alive = True
+
+
+class _FakeBrowser:
+    process_id = None
+
+    def __init__(self, *a, **k):
+        self.states = _FakeStates()
+
+    def quit(self, *a, **k):
+        self.states = type("S", (), {"is_alive": False})()
+
+
+@pytest.fixture(autouse=True)
+def _no_real_browsers(request, monkeypatch):
+    """Only tests marked live may launch a real browser."""
+    if request.node.get_closest_marker("live"):
+        return
+    import cf_bypasser.browser.pool as pool_mod
+    monkeypatch.setattr(pool_mod, "launch_chromium", _FakeBrowser)

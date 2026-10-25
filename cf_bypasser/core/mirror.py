@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 
 from curl_cffi.requests import AsyncSession
 
-from cf_bypasser.core.bypasser import CloakBypasser
+from cf_bypasser.core.bypasser import CFBypasser
 from cf_bypasser.utils.config import BrowserConfig
 from cf_bypasser.utils.misc import cache_key
 from cf_bypasser.utils.constants import (
@@ -22,17 +22,17 @@ from cf_bypasser.utils.constants import (
 class RequestMirror:
     """Handles dynamic request mirroring with Cloudflare bypass."""
 
-    def __init__(self, bypasser: Optional[CloakBypasser] = None):
-        self.bypasser: CloakBypasser = bypasser or CloakBypasser()
+    def __init__(self, bypasser: Optional[CFBypasser] = None):
+        self.bypasser: CFBypasser = bypasser or CFBypasser()
         self.session_cache: "OrderedDict[str, AsyncSession]" = OrderedDict()  # LRU per host:proxy
         self.max_sessions: int = int(os.environ.get("CF_MAX_SESSIONS", str(MAX_SESSIONS)))
 
     def strip_mirror_headers(self, headers: Dict[str, str]) -> Dict[str, str]:
-        """Remove x-hostname, x-proxy, and x-bypass-cache headers from request."""
+        """Remove the bypasser's own control headers (incl. x-auth-token) before forwarding."""
         cleaned_headers = {}
         for key, value in headers.items():
             key_lower = key.lower()
-            if key_lower not in ['x-hostname', 'x-proxy', 'x-bypass-cache']:
+            if key_lower not in ['x-hostname', 'x-proxy', 'x-bypass-cache', 'x-auth-token']:
                 cleaned_headers[key] = value
         return cleaned_headers
 
@@ -74,6 +74,13 @@ class RequestMirror:
 
         return url
 
+    def _new_session(self, proxy: Optional[str]) -> AsyncSession:
+        return AsyncSession(
+            impersonate="chrome",  # match the pooled Chrome's fingerprint
+            proxies={"http": proxy, "https": proxy} if proxy else None,
+            timeout=SESSION_TIMEOUT_SECONDS,
+        )
+
     async def get_session(self, hostname: str, proxy: Optional[str] = None) -> AsyncSession:
         session_key = f"{hostname}:{proxy or 'no-proxy'}"
 
@@ -81,15 +88,7 @@ class RequestMirror:
             self.session_cache.move_to_end(session_key)
             return self.session_cache[session_key]
 
-        proxy_dict = None
-        if proxy:
-            proxy_dict = {"http": proxy, "https": proxy}
-
-        session = AsyncSession(
-            impersonate="chrome",  # match CloakBrowser's Chrome fingerprint
-            proxies=proxy_dict,
-            timeout=SESSION_TIMEOUT_SECONDS
-        )
+        session = self._new_session(proxy)
         self.session_cache[session_key] = session
         self.session_cache.move_to_end(session_key)
 
@@ -180,15 +179,21 @@ class RequestMirror:
 
                 clean_headers = self._prepare_request_headers(headers, cf_data)
 
-                session = await self.get_session(hostname, proxy)
+                reuse = getattr(self.bypasser, "cache_enabled", True)
+                # without caching, a fresh session per request: no target cookies carried between clients
+                session = await self.get_session(hostname, proxy) if reuse else self._new_session(proxy)
 
-                response = await session.request(
-                    method=method,
-                    url=target_url,
-                    headers=clean_headers,
-                    data=body,
-                    allow_redirects=False  # Let the client handle redirects
-                )
+                try:
+                    response = await session.request(
+                        method=method,
+                        url=target_url,
+                        headers=clean_headers,
+                        data=body,
+                        allow_redirects=False  # Let the client handle redirects
+                    )
+                finally:
+                    if not reuse:
+                        await session.close()
 
                 status_code = response.status_code
 
@@ -220,13 +225,10 @@ class RequestMirror:
                     raise
 
     async def cleanup(self):
-        """Clean up resources."""
+        """Close mirror HTTP sessions. The bypasser's browser pool is shut down by its owner, not here."""
         for session in self.session_cache.values():
             try:
                 await session.close()
             except Exception as e:
                 logging.error(f"Error closing session: {e}")
         self.session_cache.clear()
-
-        if self.bypasser:
-            await self.bypasser.cleanup()

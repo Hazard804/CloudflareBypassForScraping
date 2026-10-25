@@ -1,0 +1,14 @@
+services:
+  tests:
+    build:
+      context: .
+      args:
+        INSTALL_TEST_DEPS: "1"
+    entrypoint: ["python", "-m", "pytest", "-c", "tests/pytest.ini", "--timeout=300"]
+    command: ["tests"]
+    volumes:
+      - ./tests:/app/tests:ro
+    environment:
+      - CF_BROWSERS=1
+    mem_limit: 4g
+    shm_size: 1g
