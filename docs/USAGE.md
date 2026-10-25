@@ -16,6 +16,8 @@ docker compose pull && docker compose up -d
 docker run -p 8000:8000 ghcr.io/sarperavci/cloudflarebypassforscraping:latest
 ```
 
+Images are published for `linux/amd64` and `linux/arm64`. Besides `latest`, every release `vX.Y.Z` is tagged `X.Y.Z`, `X.Y` and `X`, so you can pin a version (e.g. `:3.0.0` or `:3`).
+
 ### Manual
 Requires the [Brave browser](https://brave.com/linux/).
 ```bash
@@ -30,6 +32,18 @@ python server.py --browsers 3
 docker build -t cloudflare-bypass .
 docker run -p 8000:8000 cloudflare-bypass
 ```
+
+## Raw bytes — `/fetch`
+
+Downloads any resource (PDF, image, JSON, ...) through the browser after clearing the challenge, and returns the original bytes with the upstream status code and `Content-Type`.
+
+```bash
+curl -o paper.pdf "http://localhost:8000/fetch?url=https://example.com/files/paper.pdf"
+```
+
+The browser clears Cloudflare on the URL's origin, then requests the resource from inside the page, so cookies, TLS fingerprint and JS-set state all apply. Accepts `proxy` and `bypassCookieCache` like `/html`. Size is capped by `CF_FETCH_MAX_BYTES`. Sites that put their own (non-Cloudflare) JavaScript gate in front of a file may still return that gate page.
+
+`/cookies` also accepts `bypassCookieCache=true` to ignore a still-valid cached cookie and solve again.
 
 ## Browser pool status
 

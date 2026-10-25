@@ -26,6 +26,8 @@ A rotating residential proxy can change its exit IP unexpectedly, which invalida
 | `CF_BROWSER_MAX_JOBS` | `200` | A browser is restarted after serving this many requests, to keep memory in check. |
 | `CF_JOB_TIMEOUT` | `90` | Seconds one request may hold a browser. On timeout the browser is killed and relaunched. |
 | `CF_CHALLENGE_TIMEOUT` | `30` | Seconds to keep polling/clicking the Turnstile checkbox before giving up. |
+| `CF_MIRROR_MAX_RETRIES` | `2` | Extra attempts for a mirrored request after a 403 or network error. |
+| `CF_MIRROR_RETRY_DELAY` | `0.5` | Seconds to wait between mirror retries; raise it to avoid hammering a site. |
 | `CF_MAX_SESSIONS` | `128` | Maximum number of cached `curl_cffi` mirror sessions (LRU, one per `hostname:proxy`). The least-recently-used session is closed and evicted past this limit. |
 
 ## Browser (Brave via DrissionPage)
@@ -34,6 +36,8 @@ A rotating residential proxy can change its exit IP unexpectedly, which invalida
 |---|---|---|
 | `CF_BROWSER_PATH` | auto-detect | Path to the Brave executable. When unset, the standard macOS/Linux install locations are tried; startup fails if Brave isn't found. |
 | `CF_HEADLESS` | `false` (`true` in Docker) | Run Brave headless. Same as `server.py --headless`. |
+| `CF_LOCALE` | `en-US` | Browser language (`--lang`/`Accept-Language`) and the `Accept-Language` sent by request mirroring. Match it to your proxy's region. |
+| `CF_FETCH_MAX_BYTES` | `52428800` | Largest response `/fetch` returns (50 MB). |
 | `CF_BROWSER_NO_SANDBOX` | `false` (`true` in Docker) | Pass `--no-sandbox`; needed inside containers. Applied automatically when running as root. |
 
 ## Proxies

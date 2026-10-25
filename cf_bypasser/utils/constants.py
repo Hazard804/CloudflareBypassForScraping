@@ -1,6 +1,6 @@
 import os
 
-APP_VERSION = "2.0.0"
+APP_VERSION = "3.0.0"
 DEFAULT_CACHE_FILE = "cf_cookie_cache.json"
 COOKIE_TTL_MINUTES = int(os.environ.get("CF_COOKIE_TTL_MINUTES", "29"))
 PROXY_SCHEMES = ("http://", "https://", "socks4://", "socks5://")
