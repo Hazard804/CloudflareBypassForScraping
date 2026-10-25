@@ -230,3 +230,83 @@ def test_env_settings(monkeypatch):
     finally:
         monkeypatch.undo()
         importlib.reload(c)
+
+
+def test_pool_has_own_executor_sized_for_browsers():
+    pool = BrowserPool(8, launcher=Launcher())
+    assert pool.executor._max_workers >= 8 + 2
+
+
+async def test_dirty_browser_restarted():
+    launcher = Launcher()
+    pool = BrowserPool(1, launcher=launcher)
+    await pool.start()
+    async with pool.lease() as slot:
+        slot.browser._cfb_dirty = True  # e.g. a context could not be disposed
+    await _settle(pool)
+    assert launcher.count == 2
+    await pool.stop()
+
+
+async def test_stop_quits_browser_from_inflight_relaunch():
+    gate = threading.Event()
+    launcher = Launcher(gate=gate)
+    pool = BrowserPool(1, launcher=launcher)
+    await pool.start()
+    async with pool.lease() as slot:
+        slot.poisoned = True
+    await asyncio.sleep(0.05)  # relaunch is now blocked inside the launcher thread
+    stopper = asyncio.create_task(pool.stop())
+    await asyncio.sleep(0.05)
+    gate.set()
+    await asyncio.wait_for(stopper, 5)
+    assert len(launcher.browsers) == 2
+    assert launcher.browsers[1].quit_calls >= 1  # the browser that finished launching after stop()
+
+
+async def test_stop_interrupts_relaunch_backoff(monkeypatch):
+    import cf_bypasser.browser.pool as pool_mod
+    monkeypatch.setattr(pool_mod, "_RELAUNCH_BACKOFF_SECONDS", (30,))
+    launcher = Launcher(fail_on=2)
+    pool = BrowserPool(1, launcher=launcher)
+    await pool.start()
+    async with pool.lease() as slot:
+        slot.poisoned = True
+    await asyncio.sleep(0.1)
+    await asyncio.wait_for(pool.stop(), 3)  # must not wait out the 30s backoff
+
+
+def test_kill_profile_kills_only_matching_processes(tmp_path):
+    import subprocess
+    import sys
+    from cf_bypasser.browser.pool import _kill_profile
+    profile = str(tmp_path / "cfb-brave-x")
+    mine = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)", f"--user-data-dir={profile}"])
+    other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)", f"--user-data-dir={profile}-other"])
+    try:
+        _kill_profile(profile)
+        assert mine.wait(5) is not None
+        assert other.poll() is None
+    finally:
+        for p in (mine, other):
+            p.kill()
+
+
+def test_failed_launch_kills_what_it_spawned(monkeypatch):
+    import subprocess
+    import sys
+    import os
+    import cf_bypasser.browser.pool as pool_mod
+    spawned = {}
+
+    def fake_chromium(co):
+        spawned["proc"] = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)",
+                                            f"--user-data-dir={co.user_data_path}"])
+        spawned["dir"] = co.user_data_path
+        raise RuntimeError("BrowserConnectError: could not connect")
+
+    monkeypatch.setattr(pool_mod, "Chromium", fake_chromium)
+    with pytest.raises(RuntimeError):
+        pool_mod._launch(True, "/bin/true", None)
+    assert spawned["proc"].wait(5) is not None
+    assert not os.path.exists(spawned["dir"])

@@ -49,7 +49,9 @@ class BrowserContextSession:
         try:
             self.browser._run_cdp("Target.disposeBrowserContext", browserContextId=self.context_id)
         except Exception as e:
+            # a leftover context could keep using a released proxy relay port; restart this browser
             logging.warning(f"Disposing browser context failed: {e}")
+            self.browser._cfb_dirty = True
         self.context_id = None
         self.tab = None
 

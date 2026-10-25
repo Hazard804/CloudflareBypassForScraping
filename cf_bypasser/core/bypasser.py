@@ -145,7 +145,7 @@ class CFBypasser:
             async with self.pool.lease() as slot:
                 try:
                     data, cf_detected = await asyncio.wait_for(
-                        asyncio.to_thread(self._job, slot.browser, url, proxy_server, cached_cookies, mode),
+                        self.pool.run(self._job, slot.browser, url, proxy_server, cached_cookies, mode),
                         timeout=JOB_TIMEOUT_SECONDS,
                     )
                 except BaseException:
