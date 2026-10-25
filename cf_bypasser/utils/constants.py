@@ -31,6 +31,9 @@ BROWSER_COUNT = int(os.environ.get("CF_BROWSERS", "3"))
 HEADLESS = _env_bool("CF_HEADLESS", False)
 BROWSER_PATH = os.environ.get("CF_BROWSER_PATH") or None  # Brave; auto-detected when unset
 BROWSER_NO_SANDBOX = _env_bool("CF_BROWSER_NO_SANDBOX", False)
+# Brave's own telemetry/update hosts (P3A, variations, updater); blocked in the Docker image
+BLOCK_BRAVE_HOSTS = _env_bool("CF_BLOCK_BRAVE_HOSTS", False)
+BRAVE_DOMAINS = ("brave.com", "bravesoftware.com", "brave.software")
 JOB_TIMEOUT_SECONDS = float(os.environ.get("CF_JOB_TIMEOUT", "120"))  # > sum of the inner timeouts
 BROWSER_MAX_JOBS = int(os.environ.get("CF_BROWSER_MAX_JOBS", "200"))
 FETCH_MAX_BYTES = int(os.environ.get("CF_FETCH_MAX_BYTES", str(50 * 1024 * 1024)))

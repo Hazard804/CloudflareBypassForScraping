@@ -7,6 +7,11 @@ from urllib.parse import unquote, urlsplit
 
 from python_socks.async_.asyncio import Proxy
 
+from cf_bypasser.utils.constants import BLOCK_BRAVE_HOSTS, BRAVE_DOMAINS
+
+# with a proxy, Chrome sends hostnames to the proxy and skips --host-resolver-rules, so block here too
+BLOCKED_DOMAINS = BRAVE_DOMAINS if BLOCK_BRAVE_HOSTS else ()
+
 _HEAD_LIMIT = 64 * 1024
 _CONNECT_TIMEOUT_SECONDS = 20
 _TLS_HANDSHAKE_TIMEOUT_SECONDS = 5
@@ -75,6 +80,11 @@ async def open_upstream(upstream: str, host: str, port: int):
             return await _http_connect(upstream, host, port, use_tls=False)
     sock = await Proxy.from_url(upstream).connect(host, port, timeout=_CONNECT_TIMEOUT_SECONDS)
     return await asyncio.open_connection(sock=sock)
+
+
+def is_blocked_host(host: str, domains) -> bool:
+    host = host.lower().rstrip(".")
+    return any(host == d or host.endswith("." + d) for d in domains)
 
 
 def needs_relay(proxy: str) -> bool:
@@ -166,6 +176,11 @@ class ProxyRelay:
             method, host, port, origin_line = _parse_target(lines[0])
         except ValueError:
             writer.write(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n")
+            await writer.drain()
+            return
+
+        if is_blocked_host(host, BLOCKED_DOMAINS):
+            writer.write(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
             await writer.drain()
             return
 

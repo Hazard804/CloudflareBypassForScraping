@@ -6,9 +6,9 @@ import os
 from urllib.parse import urlparse
 
 # public Cloudflare-protected test site; override with CF_TEST_URL / CF_TEST_EXPECTED_TEXT
-TEST_URL = os.environ.get("CF_TEST_URL", "http://cf.hackmap.win/")
+TEST_URL = os.environ.get("CF_TEST_URL", "https://cloudflare.hackmap.win/")
 TEST_HOST = urlparse(TEST_URL).netloc
-EXPECTED_SUCCESS_TEXT = os.environ.get("CF_TEST_EXPECTED_TEXT", "")
+EXPECTED_SUCCESS_TEXT = os.environ.get("CF_TEST_EXPECTED_TEXT", "OK YOU PASSED IT")
 SERVER_URL = "http://localhost:8000"
 CF_COOKIE_PREFIXES = ("cf_", "__cf")
 MIN_HTML_LENGTH = 50

@@ -41,16 +41,30 @@ class BrowserContextSession:
         self.tab = self.browser.get_tab(target_id)
 
     def _dispose(self) -> None:
+        """Wipe and close this context; if that can't be confirmed, mark the browser for restart."""
         if self.context_id is None:
             return
         if self.tab is not None:
             from cf_bypasser.core.challenge import forget_frames
             forget_frames(self.tab)
+        clean = True
+        try:
+            # explicit wipe first, so nothing survives even if disposal misbehaves
+            self.browser._run_cdp("Storage.clearCookies", browserContextId=self.context_id)
+        except Exception as e:
+            logging.warning(f"Clearing context cookies failed: {e}")
+            clean = False
         try:
             self.browser._run_cdp("Target.disposeBrowserContext", browserContextId=self.context_id)
+            remaining = self.browser._run_cdp("Target.getBrowserContexts")["browserContextIds"]
+            if self.context_id in remaining:
+                logging.warning(f"Browser context {self.context_id} survived disposal")
+                clean = False
         except Exception as e:
             # a leftover context could keep using a released proxy relay port; restart this browser
             logging.warning(f"Disposing browser context failed: {e}")
+            clean = False
+        if not clean:
             self.browser._cfb_dirty = True
         self.context_id = None
         self.tab = None
