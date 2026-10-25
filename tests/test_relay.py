@@ -1,0 +1,195 @@
+import asyncio
+import base64
+import socket
+
+import pytest
+import pytest_asyncio
+
+from cf_bypasser.browser.relay import ProxyRelay, RelayRegistry, needs_relay
+
+pytestmark = pytest.mark.asyncio(loop_scope="function")
+
+
+async def _read_head(reader):
+    data = b""
+    while b"\r\n\r\n" not in data:
+        chunk = await reader.read(4096)
+        if not chunk:
+            break
+        data += chunk
+    return data
+
+
+class _Server:
+    def __init__(self, server):
+        self.server = server
+        self.port = server.sockets[0].getsockname()[1]
+        self.saw_auth = False
+        self.connects = []
+
+
+@pytest_asyncio.fixture(loop_scope="function")
+async def origin():
+    async def handle(reader, writer):
+        await _read_head(reader)
+        writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 9\r\nConnection: close\r\n\r\norigin-ok")
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    yield _Server(server)
+    server.close()
+
+
+@pytest_asyncio.fixture(loop_scope="function")
+async def upstream():
+    """HTTP CONNECT proxy requiring u:p."""
+    state = {}
+
+    async def handle(reader, writer):
+        head = (await _read_head(reader)).decode("latin-1")
+        line = head.split("\r\n", 1)[0]
+        auth_ok = f"Proxy-Authorization: Basic {base64.b64encode(b'u:p').decode()}" in head
+        if not auth_ok:
+            writer.write(b"HTTP/1.1 407 Proxy Authentication Required\r\nContent-Length: 0\r\n\r\n")
+            await writer.drain()
+            writer.close()
+            return
+        state["srv"].saw_auth = True
+        target = line.split(" ")[1]
+        state["srv"].connects.append(target)
+        host, port = target.rsplit(":", 1)
+        try:
+            r2, w2 = await asyncio.open_connection(host, int(port))
+        except OSError:
+            writer.write(b"HTTP/1.1 502 Bad Gateway\r\n\r\n")
+            writer.close()
+            return
+        writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+        await writer.drain()
+
+        async def pipe(r, w):
+            try:
+                while data := await r.read(65536):
+                    w.write(data)
+                    await w.drain()
+            finally:
+                w.close()
+
+        await asyncio.gather(pipe(reader, w2), pipe(r2, writer), return_exceptions=True)
+
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    state["srv"] = _Server(server)
+    yield state["srv"]
+    server.close()
+
+
+def _port(url):
+    return int(url.rsplit(":", 1)[1])
+
+
+async def _connect_get(relay_url, target):
+    reader, writer = await asyncio.open_connection("127.0.0.1", _port(relay_url))
+    writer.write(f"CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n".encode())
+    await writer.drain()
+    status = await _read_head(reader)
+    if not status.startswith(b"HTTP/1.1 200"):
+        writer.close()
+        return status, b""
+    writer.write(f"GET / HTTP/1.1\r\nHost: {target}\r\nConnection: close\r\n\r\n".encode())
+    await writer.drain()
+    body = await reader.read()
+    writer.close()
+    return status, body
+
+
+def _free_port():
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+async def test_connect_tunnel_through_authed_upstream(origin, upstream):
+    relay = ProxyRelay(f"http://u:p@127.0.0.1:{upstream.port}")
+    await relay.start()
+    try:
+        status, body = await _connect_get(relay.url, f"127.0.0.1:{origin.port}")
+        assert status.startswith(b"HTTP/1.1 200")
+        assert body.endswith(b"origin-ok")
+        assert upstream.saw_auth
+    finally:
+        await relay.stop()
+
+
+async def test_absolute_form_get(origin, upstream):
+    relay = ProxyRelay(f"http://u:p@127.0.0.1:{upstream.port}")
+    await relay.start()
+    try:
+        reader, writer = await asyncio.open_connection("127.0.0.1", _port(relay.url))
+        writer.write(
+            f"GET http://127.0.0.1:{origin.port}/x HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+            f"Proxy-Connection: keep-alive\r\nConnection: close\r\n\r\n".encode()
+        )
+        await writer.drain()
+        body = await reader.read()
+        writer.close()
+        assert body.startswith(b"HTTP/1.1 200")
+        assert body.endswith(b"origin-ok")
+        assert upstream.connects == [f"127.0.0.1:{origin.port}"]
+    finally:
+        await relay.stop()
+
+
+async def test_wrong_credentials_returns_502(origin, upstream):
+    relay = ProxyRelay(f"http://u:WRONG@127.0.0.1:{upstream.port}")
+    await relay.start()
+    try:
+        status, _ = await _connect_get(relay.url, f"127.0.0.1:{origin.port}")
+        assert status.startswith(b"HTTP/1.1 502")
+    finally:
+        await relay.stop()
+
+
+async def test_relay_upstream_unreachable_closes_client(origin):
+    relay = ProxyRelay(f"http://u:p@127.0.0.1:{_free_port()}")
+    await relay.start()
+    try:
+        status, body = await _connect_get(relay.url, f"127.0.0.1:{origin.port}")
+        assert status.startswith(b"HTTP/1.1 502")
+        assert body == b""
+    finally:
+        await relay.stop()
+
+
+async def test_relay_binds_loopback_only(upstream):
+    relay = ProxyRelay(f"http://u:p@127.0.0.1:{upstream.port}")
+    await relay.start()
+    try:
+        assert relay.url.startswith("http://127.0.0.1:")
+    finally:
+        await relay.stop()
+
+
+async def test_registry_refcount(upstream):
+    reg = RelayRegistry()
+    up = f"http://u:p@127.0.0.1:{upstream.port}"
+    a = await reg.acquire(up)
+    b = await reg.acquire(up)
+    assert a == b
+    await reg.release(up)
+    r, w = await asyncio.open_connection("127.0.0.1", _port(a))
+    w.close()
+    await reg.release(up)
+    with pytest.raises(OSError):
+        await asyncio.open_connection("127.0.0.1", _port(a))
+    await reg.close_all()
+
+
+def test_needs_relay():
+    assert needs_relay("http://u:p@h:1")
+    assert needs_relay("socks5://h:1")
+    assert needs_relay("socks4://h:1")
+    assert not needs_relay("http://h:1")
+    assert not needs_relay("https://h:1")

@@ -20,7 +20,7 @@ keywords = [
     "cloudflare-bypass",
     "cloudflare-bypass-script",
     "cloudflare-bypasser",
-    "cloakbrowser",
+    "drissionpage",
 ]
 
 dynamic = ["version"]
@@ -37,7 +37,8 @@ classifiers = [
 ]
 
 dependencies = [
-    "cloakbrowser",
+    "DrissionPage>=4.1.1.4,<4.2",
+    "python-socks[asyncio]>=2.5",
     "curl_cffi",
     "fastapi>=0.68.0",
     "uvicorn>=0.15.0",
