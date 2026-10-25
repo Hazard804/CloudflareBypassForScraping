@@ -24,14 +24,13 @@ async def _http_connect(upstream: str, host: str, port: int, use_tls: bool):
     """CONNECT host:port through an http(s) proxy; returns (reader, writer) of the tunnel."""
     parsed = urlsplit(upstream)
     if use_tls:
-        try:
-            reader, writer = await asyncio.open_connection(
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(
                 parsed.hostname, parsed.port, ssl=_proxy_ssl_context(), server_hostname=parsed.hostname,
                 ssl_handshake_timeout=_TLS_HANDSHAKE_TIMEOUT_SECONDS,
-            )
-        except (TimeoutError, asyncio.TimeoutError, ConnectionAbortedError) as e:
-            # a plain HTTP proxy just waits for a request line and never answers the ClientHello
-            raise ssl.SSLError("proxy did not complete a TLS handshake") from e
+            ),
+            _CONNECT_TIMEOUT_SECONDS,
+        )
     else:
         reader, writer = await asyncio.wait_for(
             asyncio.open_connection(parsed.hostname, parsed.port), _CONNECT_TIMEOUT_SECONDS
@@ -53,6 +52,12 @@ async def _http_connect(upstream: str, host: str, port: int, use_tls: bool):
         raise
 
 
+def _peer_spoke_plaintext(err: ssl.SSLError) -> bool:
+    reason = f"{getattr(err, 'reason', '')} {err}".upper()
+    return any(sig in reason for sig in ("WRONG_VERSION_NUMBER", "HTTP_REQUEST", "RECORD_LAYER_FAILURE",
+                                         "PACKET_LENGTH_TOO_LONG", "WRONG VERSION NUMBER", "RECORD LAYER FAILURE"))
+
+
 async def open_upstream(upstream: str, host: str, port: int):
     """Tunnel to host:port through the upstream proxy. Never connects directly."""
     scheme = urlsplit(upstream).scheme.lower()
@@ -61,11 +66,12 @@ async def open_upstream(upstream: str, host: str, port: int):
     if scheme == "https":
         try:
             return await _http_connect(upstream, host, port, use_tls=True)
-        except ssl.SSLCertVerificationError:
-            raise
-        except ssl.SSLError:
-            # the proxy doesn't speak TLS at all (providers often write https:// for plain HTTP);
-            # a certificate failure above is NOT retried, so credentials never go out in cleartext
+        except ssl.SSLError as e:
+            # fall back to plain only when the proxy definitely isn't TLS: it answered the ClientHello
+            # with an HTTP error. Timeouts, silence and certificate errors fail closed, so credentials
+            # never go out in cleartext to something that might have been a TLS proxy.
+            if isinstance(e, ssl.SSLCertVerificationError) or not _peer_spoke_plaintext(e):
+                raise
             return await _http_connect(upstream, host, port, use_tls=False)
     sock = await Proxy.from_url(upstream).connect(host, port, timeout=_CONNECT_TIMEOUT_SECONDS)
     return await asyncio.open_connection(sock=sock)
@@ -172,15 +178,37 @@ class ProxyRelay:
             await writer.drain()
             return
 
-        if origin_line is None:
-            writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-            await writer.drain()
-        else:
-            headers = [h for h in lines[1:] if h and not h.lower().startswith("proxy-")]
-            up_writer.write(("\r\n".join([origin_line, *headers]) + "\r\n\r\n").encode("latin-1"))
+        try:
+            if origin_line is None:
+                writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                await writer.drain()
+                await asyncio.gather(_pipe(reader, up_writer), _pipe(up_reader, writer))
+                return
+            # plain-HTTP request: Chrome reuses keep-alive proxy connections across origins, so serve
+            # exactly this one request on this tunnel and close; the next one gets a fresh connection
+            headers = [h for h in lines[1:] if h and h.split(":", 1)[0].strip().lower() not in _HOP_HEADERS]
+            up_writer.write(("\r\n".join([origin_line, *headers, "Connection: close"]) + "\r\n\r\n").encode("latin-1"))
+            body_len = _content_length(headers)
+            if body_len:
+                up_writer.write(await reader.readexactly(body_len))
             await up_writer.drain()
+            await _pipe(up_reader, writer)
+        finally:
+            up_writer.close()
 
-        await asyncio.gather(_pipe(reader, up_writer), _pipe(up_reader, writer))
+
+_HOP_HEADERS = {"connection", "keep-alive", "proxy-connection", "proxy-authorization", "proxy-authenticate", "te", "upgrade"}
+
+
+def _content_length(headers) -> int:
+    for h in headers:
+        name, _, value = h.partition(":")
+        if name.strip().lower() == "content-length":
+            try:
+                return max(0, int(value.strip()))
+            except ValueError:
+                return 0
+    return 0
 
 
 class RelayRegistry:

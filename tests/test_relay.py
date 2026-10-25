@@ -47,7 +47,13 @@ async def upstream():
     state = {}
 
     async def handle(reader, writer):
-        head = (await _read_head(reader)).decode("latin-1")
+        first = await reader.read(1)
+        if first == b"\x16":  # TLS ClientHello sent to a plain HTTP proxy
+            writer.write(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            await writer.drain()
+            writer.close()
+            return
+        head = (first + await _read_head(reader)).decode("latin-1")
         line = head.split("\r\n", 1)[0]
         auth_ok = f"Proxy-Authorization: Basic {base64.b64encode(b'u:p').decode()}" in head
         if not auth_ok:
@@ -259,10 +265,8 @@ async def test_https_upstream_bad_cert_never_falls_back_to_plain(origin, upstrea
         await relay.stop()
 
 
-async def test_https_scheme_on_plain_proxy_falls_back(origin, upstream, monkeypatch):
-    # providers often write https:// for a plain HTTP proxy (issue #115)
-    import cf_bypasser.browser.relay as relay_mod
-    monkeypatch.setattr(relay_mod, "_TLS_HANDSHAKE_TIMEOUT_SECONDS", 0.3)
+async def test_https_scheme_on_plain_proxy_falls_back(origin, upstream):
+    # providers often write https:// for a plain HTTP proxy (issue #115); it answers the ClientHello with HTTP 400
     relay = ProxyRelay(f"https://u:p@127.0.0.1:{upstream.port}")
     await relay.start()
     try:
@@ -284,3 +288,75 @@ async def test_percent_encoded_credentials_decoded(origin, upstream):
 
 def test_https_with_credentials_needs_relay():
     assert needs_relay("https://u:p@h:1")
+
+
+async def test_silent_https_proxy_never_gets_cleartext_credentials(origin, monkeypatch):
+    import cf_bypasser.browser.relay as relay_mod
+    monkeypatch.setattr(relay_mod, "_TLS_HANDSHAKE_TIMEOUT_SECONDS", 0.3)
+    received = []
+
+    async def silent(reader, writer):  # e.g. an on-path attacker dropping the ClientHello
+        received.append(await reader.read(65536))
+        await asyncio.sleep(2)
+        writer.close()
+
+    server = await asyncio.start_server(silent, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    relay = ProxyRelay(f"https://u:p@127.0.0.1:{port}")
+    await relay.start()
+    try:
+        status, _ = await _connect_get(relay.url, f"127.0.0.1:{origin.port}")
+        assert status.startswith(b"HTTP/1.1 502")
+        assert not any(b"Proxy-Authorization" in r for r in received)
+    finally:
+        await relay.stop()
+        server.close()
+
+
+@pytest_asyncio.fixture(loop_scope="function")
+async def keepalive_origin():
+    """Origin that keeps the connection open and records every request line it receives."""
+    seen = []
+
+    async def handle(reader, writer):
+        while True:
+            try:
+                head = await reader.readuntil(b"\r\n\r\n")
+            except Exception:
+                break
+            seen.append(head.decode("latin-1"))
+            writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: keep-alive\r\n\r\nok")
+            await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    srv = _Server(server)
+    srv.seen = seen
+    yield srv
+    server.close()
+
+
+async def test_absolute_form_keepalive_never_crosses_hosts(keepalive_origin, upstream):
+    relay = ProxyRelay(f"http://u:p@127.0.0.1:{upstream.port}")
+    await relay.start()
+    try:
+        reader, writer = await asyncio.open_connection("127.0.0.1", _port(relay.url))
+        writer.write(f"GET http://127.0.0.1:{keepalive_origin.port}/a HTTP/1.1\r\nHost: a\r\n"
+                     f"Connection: keep-alive\r\nProxy-Connection: keep-alive\r\n\r\n".encode())
+        await writer.drain()
+        first = await asyncio.wait_for(reader.read(65536), 5)
+        assert first.startswith(b"HTTP/1.1 200")
+        # Chrome reuses the proxy connection for another origin
+        try:
+            writer.write(b"GET http://other.example/b HTTP/1.1\r\nHost: other.example\r\n\r\n")
+            await writer.drain()
+            await asyncio.wait_for(reader.read(65536), 2)
+        except (ConnectionError, asyncio.TimeoutError):
+            pass
+        writer.close()
+        await asyncio.sleep(0.1)
+        assert len(keepalive_origin.seen) == 1
+        assert "connection: close" in keepalive_origin.seen[0].lower()
+        assert "proxy-connection" not in keepalive_origin.seen[0].lower()
+    finally:
+        await relay.stop()
