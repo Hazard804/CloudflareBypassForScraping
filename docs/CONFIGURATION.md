@@ -46,6 +46,9 @@ A rotating residential proxy can change its exit IP unexpectedly, which invalida
 | `CF_BROWSER_PATH` | auto-detect | Path to the Brave executable. When unset, the standard macOS/Linux install locations are tried; startup fails if Brave isn't found. |
 | `CF_HEADLESS` | `false` (`true` in Docker) | Run Brave headless. Same as `server.py --headless`. |
 | `CF_LOCALE` | `en-US` | Browser language (`--lang`/`Accept-Language`) and the `Accept-Language` sent by request mirroring. Match it to your proxy's region. |
+| `CF_HTML_SETTLE_POLL` | `0.5` | Seconds between HTML snapshots while `/html` waits for the page to stop changing. |
+| `CF_HTML_SETTLE_STABLE_ROUNDS` | `2` | Identical snapshots in a row needed before `/html` returns. |
+| `CF_HTML_SETTLE_MAX` | `10` | Longest `/html` waits for the page to settle, in seconds. |
 | `CF_FETCH_MAX_BYTES` | `52428800` | Largest response `/fetch` returns (50 MB). |
 | `CF_BROWSER_NO_SANDBOX` | `false` (`true` in Docker) | Pass `--no-sandbox`; needed inside containers under Docker's default seccomp profile. Applied automatically when running as root. The browser loads URLs your clients choose, so treat the container as untrusted: it runs as a non-root user and holds no secrets, and you can re-enable the sandbox by running with a seccomp profile that allows user namespaces and setting this to `false`. |
 | `PORT` | `8000` | Port the server listens on (same as `--port`); the Docker healthcheck follows it. |
