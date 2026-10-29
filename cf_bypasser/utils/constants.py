@@ -28,7 +28,9 @@ HTML_SETTLE_STABLE_ROUNDS = int(os.environ.get("CF_HTML_SETTLE_STABLE_ROUNDS", "
 HTML_SETTLE_MAX_SECONDS = float(os.environ.get("CF_HTML_SETTLE_MAX", "10"))
 CONTEXT_CLOSE_TIMEOUT_SECONDS = 30
 BROWSER_COUNT = int(os.environ.get("CF_BROWSERS", "3"))
-HEADLESS = _env_bool("CF_HEADLESS", False)
+# Headless by default: the pool exists to serve unattended hosts, where there is no
+# desktop session and a headed tab dies on its own. Set CF_HEADLESS=false to watch it.
+HEADLESS = _env_bool("CF_HEADLESS", True)
 BROWSER_PATH = os.environ.get("CF_BROWSER_PATH") or None  # Brave; auto-detected when unset
 BROWSER_NO_SANDBOX = _env_bool("CF_BROWSER_NO_SANDBOX", False)
 # Brave's own telemetry/update hosts (P3A, variations, updater); always blocked

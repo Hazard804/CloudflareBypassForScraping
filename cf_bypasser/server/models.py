@@ -40,6 +40,16 @@ class CacheClearResponse(BaseModel):
     message: str = Field(..., description="Operation message")
 
 
+class CacheRefreshResponse(BaseModel):
+    """Result of forcing a fresh bypass for a single URL."""
+    status: str = Field(..., description="Operation status (success/failure)")
+    message: str = Field(..., description="Operation message")
+    hostname: str = Field(..., description="Target hostname")
+    cookies_count: Optional[int] = Field(None, description="Number of cookies refreshed")
+    user_agent: Optional[str] = Field(None, description="New user agent generated")
+    generation_time_ms: Optional[int] = Field(None, description="Time taken to generate new cookies (ms)")
+
+
 class BrowserInfo(BaseModel):
     index: int = Field(..., description="Browser slot index")
     state: str = Field(..., description="idle, busy or restarting")

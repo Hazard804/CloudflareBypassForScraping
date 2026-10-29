@@ -12,6 +12,7 @@ from cf_bypasser.core.bypasser import CFBypasser
 from cf_bypasser.utils.config import BrowserConfig
 from cf_bypasser.utils.misc import cache_key
 from cf_bypasser.utils.constants import (
+    CF_COOKIE_PREFIXES,
     MAX_SESSIONS,
     MIRROR_MAX_RETRIES,
     MIRROR_RETRY_BACKOFF_SECONDS,
@@ -47,9 +48,13 @@ class RequestMirror:
                         name, value = cookie.split('=', 1)
                         incoming_dict[name.strip()] = value.strip()
 
-            # CF cookies are authoritative for any name they carry; other client cookies pass through.
+            # Only Cloudflare's own cookies are authoritative. The bypass browser also
+            # carries the site's anonymous session (e.g. __Host-..._session); letting those
+            # overwrite the caller's cookies would silently drop the caller's login.
             merged_cookies = dict(incoming_dict)
-            merged_cookies.update(cf_cookies)
+            for name, value in cf_cookies.items():
+                if str(name).lower().startswith(CF_COOKIE_PREFIXES):
+                    merged_cookies[name] = value
 
             cookie_pairs = [f"{name}={value}" for name, value in merged_cookies.items()]
             return '; '.join(cookie_pairs)

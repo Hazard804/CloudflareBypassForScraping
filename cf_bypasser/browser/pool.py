@@ -29,6 +29,11 @@ _BRAVE_CANDIDATES = (
     "/usr/bin/brave-browser",
     "/usr/bin/brave-browser-stable",
     "/opt/brave.com/brave/brave",
+    # Windows. %VARS% are expanded at lookup time; the per-user path is what the
+    # standalone installer uses, the Program Files ones are machine-wide installs.
+    r"%PROGRAMFILES%\BraveSoftware\Brave-Browser\Application\brave.exe",
+    r"%PROGRAMFILES(X86)%\BraveSoftware\Brave-Browser\Application\brave.exe",
+    r"%LOCALAPPDATA%\BraveSoftware\Brave-Browser\Application\brave.exe",
 )
 
 _RELAUNCH_BACKOFF_SECONDS = (1, 2, 4, 8, 16, 30)
@@ -42,12 +47,14 @@ _headless_ua: Optional[str] = None
 
 def find_brave(explicit: Optional[str] = BROWSER_PATH) -> str:
     if explicit:
-        if not os.path.exists(explicit):
+        expanded = os.path.expandvars(explicit)
+        if not os.path.exists(expanded):
             raise FileNotFoundError(f"CF_BROWSER_PATH does not exist: {explicit}")
-        return explicit
+        return expanded
     for path in _BRAVE_CANDIDATES:
-        if os.path.exists(path):
-            return path
+        expanded = os.path.expandvars(path)
+        if os.path.exists(expanded):
+            return expanded
     raise FileNotFoundError("Brave browser not found; install it or set CF_BROWSER_PATH")
 
 

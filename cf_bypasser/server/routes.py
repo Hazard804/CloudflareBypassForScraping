@@ -9,7 +9,8 @@ from fastapi import FastAPI, HTTPException, Request, Response, Query, Depends
 from cf_bypasser.core.bypasser import CFBypasser
 from cf_bypasser.core.mirror import RequestMirror
 from cf_bypasser.server.models import (
-    BrowserPoolResponse, CookieResponse, CacheStatsResponse, CacheClearResponse, ErrorResponse,
+    BrowserPoolResponse, CookieResponse, CacheStatsResponse, CacheClearResponse, CacheRefreshResponse,
+    ErrorResponse,
 )
 from cf_bypasser.utils.constants import APP_VERSION, PROXY_SCHEMES, CF_COOKIE_PREFIXES
 from cf_bypasser.utils.security import is_safe_url, redact_proxy
@@ -126,6 +127,51 @@ def setup_routes(app: FastAPI):
         except Exception as e:
             logger.error(f"Error getting cookies for {url}: {e}")
             raise HTTPException(status_code=500, detail="Internal server error")
+
+    @app.post("/cache/refresh", response_model=CacheRefreshResponse,
+              responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}})
+    async def refresh_cache(
+        url: Optional[str] = Query(None, description="Target URL to refresh cookies for"),
+        proxy: Optional[str] = Query(None, description="Proxy URL (optional)"),
+        bypasser: CFBypasser = Depends(get_bypasser),
+    ):
+        """Force a fresh bypass for one URL and overwrite its cached cookies.
+
+        Kept for clients that were built against the 2.x API, which used this endpoint
+        when a cached clearance kept getting rejected; /cache/clear wipes every hostname,
+        this one only re-solves the URL it is given.
+        """
+        if not url:
+            raise HTTPException(status_code=400, detail="Missing required query parameter: url")
+        if proxy and not proxy.startswith(PROXY_SCHEMES):
+            raise HTTPException(status_code=400, detail="Proxy must start with http://, https://, socks4:// or socks5://")
+
+        hostname = urlparse(url).netloc
+        start_time = time.time()
+        logger.info(f"Refreshing cookies for {url} (proxy: {'yes' if proxy else 'no'})")
+
+        try:
+            data = await bypasser.get_or_generate_cookies(url, proxy, bypass_cache=True)
+        except Exception as e:
+            logger.error(f"Error refreshing cookies for {url}: {redact_proxy(str(e))}")
+            raise HTTPException(status_code=500, detail="Internal server error")
+
+        if not data:
+            raise HTTPException(status_code=500, detail="Failed to bypass Cloudflare protection")
+
+        generation_time = int((time.time() - start_time) * 1000)
+        cf_cookies = [name for name in data["cookies"].keys() if name.startswith(CF_COOKIE_PREFIXES)]
+        logger.info(f"Refreshed {len(data['cookies'])} cookies in {generation_time}ms")
+        logger.info(f"Cloudflare cookies: {cf_cookies}")
+
+        return CacheRefreshResponse(
+            status="success",
+            message=f"Cookies refreshed successfully - {hostname}",
+            hostname=hostname,
+            cookies_count=len(data["cookies"]),
+            user_agent=data["user_agent"],
+            generation_time_ms=generation_time,
+        )
 
     @app.get("/html", responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}})
     async def get_html(
