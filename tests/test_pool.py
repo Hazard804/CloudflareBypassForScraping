@@ -297,6 +297,7 @@ def test_failed_launch_kills_what_it_spawned(monkeypatch):
     import sys
     import os
     import cf_bypasser.browser.pool as pool_mod
+    monkeypatch.setattr(pool_mod, "_LAUNCH_RETRY_DELAY_SECONDS", 0)
     spawned = {}
 
     def fake_chromium(co):
@@ -310,6 +311,96 @@ def test_failed_launch_kills_what_it_spawned(monkeypatch):
         pool_mod._launch(True, "/bin/true", None)
     assert spawned["proc"].wait(5) is not None
     assert not os.path.exists(spawned["dir"])
+
+
+def test_launch_retries_a_transient_attach_failure(monkeypatch):
+    import cf_bypasser.browser.pool as pool_mod
+    monkeypatch.setattr(pool_mod, "_LAUNCH_RETRY_DELAY_SECONDS", 0)
+    attempts = []
+
+    def flaky(headless, browser_path, user_agent):
+        attempts.append(1)
+        if len(attempts) < 3:
+            raise OSError("Connection to remote host was lost.")
+        return "browser"
+
+    monkeypatch.setattr(pool_mod, "_launch_once", flaky)
+    assert pool_mod._launch(True, "/bin/true", None) == "browser"
+    assert len(attempts) == 3
+
+
+def test_launch_retry_uses_a_fresh_port_each_time(monkeypatch):
+    import cf_bypasser.browser.pool as pool_mod
+    monkeypatch.setattr(pool_mod, "_LAUNCH_RETRY_DELAY_SECONDS", 0)
+    seen = []
+
+    def fake_chromium(co):
+        seen.append(co.address)
+        if len(seen) < 2:
+            raise RuntimeError("BrowserConnectError")
+        return FakeBrowser()
+
+    monkeypatch.setattr(pool_mod, "Chromium", fake_chromium)
+    pool_mod._launch(True, "/bin/true", None)
+    assert len(seen) == 2
+    assert seen[0] != seen[1]
+
+
+def test_launch_gives_up_after_all_attempts_with_proxy_hint(monkeypatch):
+    import cf_bypasser.browser.pool as pool_mod
+    monkeypatch.setattr(pool_mod, "_LAUNCH_RETRY_DELAY_SECONDS", 0)
+    attempts = []
+
+    class WebSocketProxyError(Exception):
+        pass
+
+    def always(headless, browser_path, user_agent):
+        attempts.append(1)
+        raise WebSocketProxyError("Connection to remote host was lost.")
+
+    monkeypatch.setattr(pool_mod, "_launch_once", always)
+    with pytest.raises(RuntimeError) as err:
+        pool_mod._launch(True, "/bin/true", None)
+    assert len(attempts) == pool_mod._LAUNCH_ATTEMPTS
+    assert "NO_PROXY" in str(err.value)
+
+
+def test_launch_does_not_retry_a_missing_browser(monkeypatch):
+    import cf_bypasser.browser.pool as pool_mod
+    attempts = []
+
+    def missing(headless, browser_path, user_agent):
+        attempts.append(1)
+        raise FileNotFoundError("no browser here")
+
+    monkeypatch.setattr(pool_mod, "_launch_once", missing)
+    with pytest.raises(FileNotFoundError):
+        pool_mod._launch(True, "/bin/true", None)
+    assert len(attempts) == 1
+
+
+def test_loopback_hosts_added_to_no_proxy_without_losing_entries(monkeypatch):
+    import os
+    import cf_bypasser.browser.pool as pool_mod
+    monkeypatch.setenv("no_proxy", "corp.example")
+    monkeypatch.setenv("NO_PROXY", "corp.example")
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:7890")
+    pool_mod._ensure_loopback_bypasses_proxy()
+    entries = [e for e in os.environ["NO_PROXY"].split(",") if e]
+    assert "corp.example" in entries
+    assert {"localhost", "127.0.0.1", "::1"} <= set(entries)
+    # the proxy itself must survive: it is still used for every non-loopback host
+    assert os.environ["HTTP_PROXY"] == "http://127.0.0.1:7890"
+
+
+def test_loopback_no_proxy_leaves_a_wildcard_alone(monkeypatch):
+    import os
+    import cf_bypasser.browser.pool as pool_mod
+    monkeypatch.setenv("no_proxy", "*")
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    pool_mod._ensure_loopback_bypasses_proxy()
+    # case-insensitive env on Windows, two separate keys elsewhere
+    assert (os.environ.get("NO_PROXY") or os.environ.get("no_proxy")) == "*"
 
 
 def test_browser_args_block_webrtc_ip_leak():

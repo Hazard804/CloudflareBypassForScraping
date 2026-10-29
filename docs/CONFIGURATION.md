@@ -59,6 +59,8 @@ Brave's own telemetry/update hosts (`brave.com`, `bravesoftware.com`, `brave.sof
 
 Every request runs in its own disposable browser context, so each request can use a different proxy (`proxy=` query param or `x-proxy` header) without restarting the browser. Plain `http://host:port` proxies are handed to the browser directly; proxies with credentials (`http://user:pass@host:port`) and SOCKS proxies go through a small relay on `127.0.0.1`, because the browser can't authenticate per-context proxies itself. A request with an invalid or unreachable proxy fails; it never falls back to a direct connection.
 
+The environment's `HTTP_PROXY`/`HTTPS_PROXY` are not used to proxy the browser, and they also must not be used for the DevTools socket: `websocket-client` would tunnel it through that proxy, so a proxy that is down or refuses `CONNECT` to loopback makes the browser launch fail with `WebSocketProxyException: Connection to remote host was lost`. The launcher therefore adds `localhost`, `127.0.0.1` and `::1` to `no_proxy` before every launch; if start-up still dies this way, start the server with those variables unset.
+
 ## Example
 
 ```bash

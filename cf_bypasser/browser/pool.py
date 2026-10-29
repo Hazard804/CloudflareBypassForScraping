@@ -5,6 +5,7 @@ import shutil
 import socket
 import tempfile
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from functools import partial
@@ -38,6 +39,14 @@ _BRAVE_CANDIDATES = (
 
 _RELAUNCH_BACKOFF_SECONDS = (1, 2, 4, 8, 16, 30)
 
+# a connect to the freshly spawned browser can lose the race with its DevTools endpoint:
+# give it a few independent tries (new port, new profile) before declaring the launch dead
+_LAUNCH_ATTEMPTS = 3
+_LAUNCH_RETRY_DELAY_SECONDS = 0.5
+
+# websocket-client tunnels ws:// through http_proxy unless the host is whitelisted
+_LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "::1")
+
 # auto_port picks a free port then launches; concurrent launches can grab the same one
 _launch_lock = threading.Lock()
 
@@ -58,8 +67,27 @@ def find_brave(explicit: Optional[str] = BROWSER_PATH) -> str:
     raise FileNotFoundError("Brave browser not found; install it or set CF_BROWSER_PATH")
 
 
+def _ensure_loopback_bypasses_proxy() -> None:
+    """Keep the DevTools WebSocket off the environment's HTTP proxy.
+
+    websocket-client sends every ws:// connect through http_proxy unless the target is listed in
+    no_proxy, and the DevTools endpoint is 127.0.0.1. With a proxy exported (system proxy, IDE
+    terminal, docker --env-file) the launch then dies in _tunnel the moment that proxy is down,
+    busy or refuses CONNECT to loopback: "Connection to remote host was lost". Only loopback is
+    exempted here; the proxy env stays in place for every other host.
+    """
+    for key in ("no_proxy", "NO_PROXY"):
+        entries = [e.strip() for e in os.environ.get(key, "").split(",") if e.strip()]
+        if "*" in entries:
+            return
+        missing = [h for h in _LOOPBACK_HOSTS if h not in entries]
+        if missing:
+            os.environ[key] = ",".join(entries + missing)
+
+
 def launch_chromium(headless: bool = HEADLESS, browser_path: Optional[str] = None) -> Chromium:
     global _headless_ua
+    _ensure_loopback_bypasses_proxy()
     browser_path = browser_path or find_brave()
     browser = _launch(headless, browser_path, _headless_ua if headless else None)
     if headless and _headless_ua is None:
@@ -95,6 +123,35 @@ def _free_port() -> int:
 
 
 def _launch(headless: bool, browser_path: str, user_agent: Optional[str]) -> Chromium:
+    """Launch and attach, retrying a failed attach on a fresh port and profile."""
+    error: Optional[BaseException] = None
+    for attempt in range(_LAUNCH_ATTEMPTS):
+        try:
+            return _launch_once(headless, browser_path, user_agent)
+        except FileNotFoundError:
+            raise  # browser binary missing: retrying can't help
+        except Exception as e:
+            error = e
+            if attempt + 1 < _LAUNCH_ATTEMPTS:
+                logging.warning(
+                    f"Browser launch attempt {attempt + 1}/{_LAUNCH_ATTEMPTS} failed "
+                    f"({type(e).__name__}: {e}); retrying on a new port"
+                )
+                time.sleep(_LAUNCH_RETRY_DELAY_SECONDS * (attempt + 1))
+    raise RuntimeError(f"Browser launch failed after {_LAUNCH_ATTEMPTS} attempts: "
+                       f"{type(error).__name__}: {error}{_launch_hint(error)}") from error
+
+
+def _launch_hint(error: Optional[BaseException]) -> str:
+    """Turn the common proxy-mangled attach into an actionable message."""
+    text = f"{type(error).__name__} {error}".lower()
+    if "proxy" in text:
+        return (". Hint: the DevTools handshake went through an HTTP proxy. Start the server with "
+                "HTTP_PROXY/HTTPS_PROXY unset, or keep 127.0.0.1 in NO_PROXY.")
+    return ""
+
+
+def _launch_once(headless: bool, browser_path: str, user_agent: Optional[str]) -> Chromium:
     # our own unique profile dir: every Brave process of this launch carries it in --user-data-dir,
     # so we can always find and kill exactly them (failed launch, unknown pid, hung browser)
     profile = tempfile.mkdtemp(prefix="cfb-brave-")
