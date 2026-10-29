@@ -122,3 +122,12 @@ def test_enable_cache_arg_sets_env(monkeypatch):
     monkeypatch.setenv("CF_CACHE_ENABLED", "false")
     server.main()
     assert os.environ["CF_CACHE_ENABLED"] == "true"
+
+
+def test_no_cache_arg_disables_caching(monkeypatch):
+    import server
+    monkeypatch.setattr(uvicorn, "run", lambda *a, **k: None)
+    monkeypatch.setattr(sys, "argv", ["server.py", "--no-cache"])
+    monkeypatch.setenv("CF_CACHE_ENABLED", "true")
+    server.main()
+    assert os.environ["CF_CACHE_ENABLED"] == "false"

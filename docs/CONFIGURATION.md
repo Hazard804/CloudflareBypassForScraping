@@ -10,11 +10,11 @@ All runtime configuration is via environment variables. Every variable is option
 
 ## Caching (off by default)
 
-By default nothing is cached: every request solves the challenge in a fresh browser context, nothing is written to disk, and request mirroring uses a fresh HTTP session per request, so no cookies carry over between requests or clients. Turn caching on to reuse clearance cookies (much faster for repeated requests to the same site, especially mirroring).
+By default clearance cookies are cached: they are reused (in memory and in `cf_cookie_cache.json`) until they expire, and request mirroring reuses one HTTP session per host, so repeated requests to the same site skip the browser solve. Disable caching with `--no-cache` (`CF_CACHE_ENABLED=false`) to solve the challenge in a fresh browser context for every request and use a fresh HTTP session per request, so no cookies carry over between requests or clients.
 
 | Variable | Default | Description |
 |---|---|---|
-| `CF_CACHE_ENABLED` | `false` | Cache clearance cookies (in memory and in `cf_cookie_cache.json`) and reuse mirror sessions. Same as `server.py --enable-cache`. `/cache/stats` and `/cache/clear` work either way. |
+| `CF_CACHE_ENABLED` | `true` | Cache clearance cookies (in memory and in `cf_cookie_cache.json`) and reuse mirror sessions. Disable with `server.py --no-cache`. `/cache/stats` and `/cache/clear` work either way. |
 | `CF_COOKIE_TTL_MINUTES` | `29` | How long generated Cloudflare clearance cookies are cached before they're considered expired and regenerated. Only used when caching is enabled. Cloudflare `cf_clearance` cookies are short-lived, so keep this under ~30 minutes. |
 
 ## Proxy exit-IP check

@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import re
 import traceback
 from collections import OrderedDict
 from typing import Dict, Any, Optional, Tuple
@@ -13,11 +14,69 @@ from cf_bypasser.utils.config import BrowserConfig
 from cf_bypasser.utils.misc import cache_key
 from cf_bypasser.utils.constants import (
     CF_COOKIE_PREFIXES,
+    CHROME_HEADERS,
     MAX_SESSIONS,
     MIRROR_MAX_RETRIES,
     MIRROR_RETRY_BACKOFF_SECONDS,
     SESSION_TIMEOUT_SECONDS,
 )
+
+# Transport-level headers belong to the client library, not to the caller: forwarding
+# "Connection: keep-alive" or a python-requests "Accept-Encoding: gzip, deflate"
+# alongside a Chrome user-agent is a fingerprint mismatch Cloudflare flags.
+HOP_BY_HOP_HEADERS = frozenset({
+    "connection", "proxy-connection", "keep-alive", "transfer-encoding", "te", "trailer", "upgrade",
+})
+
+# Headers a real Chrome derives from its own navigation; always rebuilt for the target UA.
+CLIENT_HINT_HEADERS = frozenset({
+    "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform", "sec-fetch-dest", "sec-fetch-mode",
+    "sec-fetch-site", "sec-fetch-user",
+})
+
+_CHROME_VERSION_RE = re.compile(r"Chrome/(\d+)")
+
+
+def _platform_hint(user_agent: str) -> Tuple[str, str]:
+    """sec-ch-ua-platform / sec-ch-ua-mobile derived from the user agent."""
+    ua = user_agent.lower()
+    if "android" in ua:
+        return '"Android"', "?1"
+    if "iphone" in ua or "ipad" in ua:
+        return '"iOS"', "?1"
+    if "macintosh" in ua or "mac os x" in ua:
+        return '"macOS"', "?0"
+    if "linux" in ua:
+        return '"Linux"', "?0"
+    return '"Windows"', "?0"
+
+
+def client_hint_headers(user_agent: str, document: bool) -> Dict[str, str]:
+    """Chromium client hints + fetch metadata matching the UA the bypass minted."""
+    match = _CHROME_VERSION_RE.search(user_agent or "")
+    major = match.group(1) if match else "124"
+    platform, mobile = _platform_hint(user_agent or "")
+
+    headers = {
+        "sec-ch-ua": f'"Chromium";v="{major}", "Not:A-Brand";v="24", "Google Chrome";v="{major}"',
+        "sec-ch-ua-mobile": mobile,
+        "sec-ch-ua-platform": platform,
+    }
+    if document:
+        headers.update({
+            "sec-fetch-dest": "document",
+            "sec-fetch-mode": "navigate",
+            "sec-fetch-site": "none",
+            "sec-fetch-user": "?1",
+            "upgrade-insecure-requests": "1",
+        })
+    else:
+        headers.update({
+            "sec-fetch-dest": "empty",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-site": "same-origin",
+        })
+    return headers
 
 
 class RequestMirror:
@@ -107,12 +166,24 @@ class RequestMirror:
         return session
 
     def _prepare_request_headers(self, headers: Dict[str, str], cf_data: Dict[str, Any]) -> Dict[str, str]:
-        """Strip mirror/host headers, force the CF user-agent, merge cookies, add Chrome headers."""
+        """Rebuild the request so it looks like the browser that minted the clearance.
+
+        Everything the caller sent is mirrored, except the headers that give away a
+        non-browser HTTP client: hop-by-hop transport headers, a library-default
+        `Accept: */*` / `Accept-Encoding: gzip, deflate`, and the Chromium client hints,
+        which are regenerated from the bypassed user agent.
+        """
         clean_headers = self.strip_mirror_headers(headers)
 
         # Override User-Agent with the one used for CF bypass
-        clean_headers['user-agent'] = cf_data['user_agent']
+        user_agent = cf_data['user_agent']
+        clean_headers['user-agent'] = user_agent
         clean_headers.pop("host", None)
+
+        # rebuilt below (or owned by curl_cffi) -- never forward the caller's copy
+        rebuilt = HOP_BY_HOP_HEADERS | CLIENT_HINT_HEADERS | {"accept-encoding", "host"}
+        for key in [k for k in clean_headers if k.lower() in rebuilt]:
+            del clean_headers[key]
 
         incoming_cookies = ''
         cookie_header_key = None
@@ -128,10 +199,29 @@ class RequestMirror:
             del clean_headers[cookie_header_key]
         clean_headers['Cookie'] = merged_cookies
 
-        # Add Chrome-like headers for better impersonation
-        browser_headers = BrowserConfig.get_chrome_headers()
-        for key, value in browser_headers.items():
-            if key.lower() not in [h.lower() for h in clean_headers.keys()]:
+        # a library default ("*/*") is a bot tell; a real Accept is the caller's intent, so keep it
+        accept_key = next((k for k in clean_headers if k.lower() == 'accept'), None)
+        accept = (clean_headers.get(accept_key) or '').strip()
+        if not accept or accept == '*/*':
+            if accept_key:
+                del clean_headers[accept_key]
+            accept = CHROME_HEADERS['Accept']
+            clean_headers['Accept'] = accept
+
+        document = 'text/html' in accept.lower()
+        clean_headers['Accept-Encoding'] = CHROME_HEADERS['Accept-Encoding']
+
+        # client hints must agree with the UA, otherwise Cloudflare sees Chrome 156 claiming
+        # headers from a curl/requests client
+        for key, value in client_hint_headers(user_agent, document).items():
+            clean_headers[key] = value
+
+        # remaining Chrome defaults for better impersonation (never hop-by-hop ones)
+        present = {k.lower() for k in clean_headers}
+        for key, value in BrowserConfig.get_chrome_headers().items():
+            if key.lower() in HOP_BY_HOP_HEADERS:
+                continue
+            if key.lower() not in present:
                 clean_headers[key] = value
 
         return clean_headers

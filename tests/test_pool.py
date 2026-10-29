@@ -396,8 +396,11 @@ def test_loopback_hosts_added_to_no_proxy_without_losing_entries(monkeypatch):
 def test_loopback_no_proxy_leaves_a_wildcard_alone(monkeypatch):
     import os
     import cf_bypasser.browser.pool as pool_mod
-    monkeypatch.setenv("no_proxy", "*")
+    # delete first: on Windows os.environ is case-insensitive, so delenv("NO_PROXY") would
+    # otherwise erase the value just set through "no_proxy"
     monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.delenv("no_proxy", raising=False)
+    monkeypatch.setenv("no_proxy", "*")
     pool_mod._ensure_loopback_bypasses_proxy()
     # case-insensitive env on Windows, two separate keys elsewhere
     assert (os.environ.get("NO_PROXY") or os.environ.get("no_proxy")) == "*"

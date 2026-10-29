@@ -11,7 +11,7 @@ PROXY = os.environ.get("CF_PROXY")  # optional, e.g. http://user:pass@host:port
 
 
 async def main():
-    # 2 reused Brave browsers; caching is off unless you pass cache_enabled=True
+    # 2 reused Brave browsers; caching is on by default (pass cache_enabled=False to disable)
     bypasser = CFBypasser(pool=BrowserPool(2))
     await bypasser.start()
     mirror = RequestMirror(bypasser)

@@ -17,8 +17,10 @@ def main():
     parser.add_argument("--browsers", type=int, default=int(os.environ.get("CF_BROWSERS", "3")),
                         help="Number of reused browsers per worker (default 3)")
     parser.add_argument("--headless", action="store_true", help="Run browsers headless (Cloudflare may detect it)")
+    parser.add_argument("--no-cache", action="store_true",
+                        help="Disable cookie caching and mirror session reuse (caching is ON by default; env CF_CACHE_ENABLED)")
     parser.add_argument("--enable-cache", action="store_true",
-                        help="Cache clearance cookies and reuse mirror sessions (off by default; env CF_CACHE_ENABLED)")
+                        help="Deprecated no-op: caching is on by default. Kept so existing launch scripts keep working")
     parser.add_argument("--auth-token", type=str, default=None,
                         help="Require this value in the x-auth-token header on every request (env CF_AUTH_TOKEN)")
 
@@ -30,6 +32,8 @@ def main():
     os.environ["CF_BROWSERS"] = str(args.browsers)
     if args.headless:
         os.environ["CF_HEADLESS"] = "true"
+    if args.no_cache:
+        os.environ["CF_CACHE_ENABLED"] = "false"
     if args.enable_cache:
         os.environ["CF_CACHE_ENABLED"] = "true"
     if args.auth_token:

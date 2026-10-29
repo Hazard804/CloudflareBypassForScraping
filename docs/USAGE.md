@@ -25,7 +25,7 @@ pip install -r server_requirements.txt
 python server.py --browsers 3
 ```
 
-`server.py` accepts `--host`, `--port`, `--workers`, `--log-level`, `--browsers` (reused browsers per worker, default 3), `--headless`, `--enable-cache` (cookie caching is off by default) and `--auth-token`. The Docker image runs Brave headless; arguments pass through, e.g. `docker run -p 8000:8000 IMAGE --browsers 5`.
+`server.py` accepts `--host`, `--port`, `--workers`, `--log-level`, `--browsers` (reused browsers per worker, default 3), `--headless`, `--no-cache` (cookie caching is on by default) and `--auth-token`. The Docker image runs Brave headless; arguments pass through, e.g. `docker run -p 8000:8000 IMAGE --browsers 5`.
 
 ### Build from source
 ```bash

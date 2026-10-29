@@ -607,9 +607,17 @@ def test_fetch_binary_skips_navigation(monkeypatch):
     assert data["body"] == b"%PDF"
 
 
-async def test_cache_disabled_by_default(tmp_path, monkeypatch):
+async def test_cache_enabled_by_default(tmp_path):
+    b = CFBypasser(log=False, cache_file=str(tmp_path / "cache.json"), pool=BrowserPool(1, launcher=FakeBrowser))
+    assert b.cache_enabled is True
+    assert b.cookie_cache.enabled is True
+    await b.cleanup()
+
+
+async def test_cache_disabled_solves_every_request(tmp_path, monkeypatch):
     import os
-    b = CFBypasser(log=False, cache_file=str(tmp_path / "cache.json"), pool=BrowserPool(2, launcher=FakeBrowser))
+    b = CFBypasser(log=False, cache_file=str(tmp_path / "cache.json"),
+                   pool=BrowserPool(2, launcher=FakeBrowser), cache_enabled=False)
     await b.start()
     calls = []
     monkeypatch.setattr(CFBypasser, "_job", fake_job({"cf_clearance": "c"}, cf_detected=True, tracker=calls))
@@ -625,7 +633,8 @@ async def test_cache_disabled_by_default(tmp_path, monkeypatch):
 
 async def test_cache_disabled_runs_same_host_in_parallel(tmp_path, monkeypatch):
     import threading
-    b = CFBypasser(log=False, cache_file=str(tmp_path / "c.json"), pool=BrowserPool(3, launcher=FakeBrowser))
+    b = CFBypasser(log=False, cache_file=str(tmp_path / "c.json"),
+                   pool=BrowserPool(3, launcher=FakeBrowser), cache_enabled=False)
     await b.start()
     live = peak = 0
     lock = threading.Lock()
