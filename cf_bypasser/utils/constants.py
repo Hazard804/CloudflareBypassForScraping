@@ -39,6 +39,11 @@ JOB_TIMEOUT_SECONDS = float(os.environ.get("CF_JOB_TIMEOUT", "120"))  # > sum of
 BROWSER_MAX_JOBS = int(os.environ.get("CF_BROWSER_MAX_JOBS", "200"))
 FETCH_MAX_BYTES = int(os.environ.get("CF_FETCH_MAX_BYTES", str(50 * 1024 * 1024)))
 SESSION_TIMEOUT_SECONDS = 30
+# TLS/HTTP2 fingerprint for replayed mirror requests. curl_cffi's "chrome" targets are the
+# most-detected ones: measured against real zones (jable.tv, missav.ws) every chrome variant
+# was challenged while "safari" passed, and no tested site preferred chrome. Override per
+# deployment (CF_IMPERSONATE) or per request (x-impersonate) when a zone disagrees.
+IMPERSONATE = os.environ.get("CF_IMPERSONATE", "safari")
 MIRROR_MAX_RETRIES = int(os.environ.get("CF_MIRROR_MAX_RETRIES", "2"))
 MIRROR_RETRY_BACKOFF_SECONDS = float(os.environ.get("CF_MIRROR_RETRY_DELAY", "0.5"))
 MAX_SESSIONS = int(os.environ.get("CF_MAX_SESSIONS", "128"))

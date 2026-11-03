@@ -123,7 +123,8 @@ def test_session_cache_lru_eviction(monkeypatch):
 
     assert len(m.session_cache) == 3
     keys = list(m.session_cache.keys())
-    assert keys == ["host2.com:no-proxy", "host3.com:no-proxy", "host4.com:no-proxy"]
+    fp = mirror_mod.IMPERSONATE
+    assert keys == [f"host{i}.com:no-proxy:{fp}" for i in (2, 3, 4)]
 
     evicted = [s for s in FakeSession.instances if s.closed]
     assert len(evicted) == 2
@@ -160,7 +161,8 @@ def test_session_cache_lru_recency(monkeypatch):
 
     asyncio.run(run())
     keys = set(m.session_cache.keys())
-    assert keys == {"a.com:no-proxy", "c.com:no-proxy"}
+    fp = mirror_mod.IMPERSONATE
+    assert keys == {f"a.com:no-proxy:{fp}", f"c.com:no-proxy:{fp}"}
 
 
 # ---- except-branch: deterministic errors re-raise immediately ----

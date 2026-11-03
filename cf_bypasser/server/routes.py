@@ -71,7 +71,7 @@ def _validate_request(request: Request, url: Optional[str], proxy: Optional[str]
             detail="url parameter is required when x-hostname header is not present"
         )
 
-    if not is_safe_url(url):
+    if not is_safe_url(url, proxy):
         raise HTTPException(
             status_code=400,
             detail="Invalid or unsafe URL - localhost and private IPs are not allowed"
@@ -334,6 +334,7 @@ def setup_routes(app: FastAPI):
 
             hostname = None
             proxy = None
+            impersonate = None
             bypass_cache = False
 
             for key, value in headers.items():
@@ -342,6 +343,8 @@ def setup_routes(app: FastAPI):
                     hostname = value
                 elif key_lower == 'x-proxy':
                     proxy = value
+                elif key_lower == 'x-impersonate':
+                    impersonate = value.strip() or None
                 elif key_lower == 'x-bypass-cache':
                     bypass_cache = value.lower() in ('true', '1', 'yes', 'on')
 
@@ -358,7 +361,7 @@ def setup_routes(app: FastAPI):
                     detail="x-hostname header is required for request mirroring"
                 )
 
-            if not is_safe_url(f"https://{hostname}"):
+            if not is_safe_url(f"https://{hostname}", proxy):
                 raise HTTPException(
                     status_code=400,
                     detail="Invalid or unsafe hostname - localhost and private IPs are not allowed"
@@ -389,7 +392,8 @@ def setup_routes(app: FastAPI):
                 hostname=hostname,
                 proxy=proxy,
                 bypass_cache=bypass_cache,
-                body=body
+                body=body,
+                impersonate=impersonate,
             )
 
             processing_time = int((time.time() - start_time) * 1000)

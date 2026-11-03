@@ -37,7 +37,16 @@ A rotating residential proxy can change its exit IP unexpectedly, which invalida
 | `CF_CHALLENGE_TIMEOUT` | `30` | Seconds to keep polling/clicking the Turnstile checkbox before giving up. |
 | `CF_MIRROR_MAX_RETRIES` | `2` | Extra attempts for a mirrored request after a 403 or network error. |
 | `CF_MIRROR_RETRY_DELAY` | `0.5` | Seconds to wait between mirror retries; raise it to avoid hammering a site. |
-| `CF_MAX_SESSIONS` | `128` | Maximum number of cached `curl_cffi` mirror sessions (LRU, one per `hostname:proxy`). The least-recently-used session is closed and evicted past this limit. |
+| `CF_MAX_SESSIONS` | `128` | Maximum number of cached `curl_cffi` mirror sessions (LRU, one per `hostname:proxy:fingerprint`). The least-recently-used session is closed and evicted past this limit. |
+
+## Request mirroring
+
+The browser solves the challenge, but the replayed request is sent by `curl_cffi` — so the TLS/HTTP2 fingerprint must be one the target zone accepts. `safari` is the default because it passed every site measured (`jable.tv`, `missav.ws`, `x999x.me`, `javday`, `javrate`) while `chrome` was challenged by several; no site preferred `chrome`.
+
+| Variable | Default | Description |
+|---|---|---|
+| `CF_IMPERSONATE` | `safari` | `curl_cffi` impersonation target for replayed requests (`safari`, `chrome`, `chrome136`, `firefox133`, …). Override per request with the `x-impersonate` header; that header is never forwarded to the mirrored site. |
+| `CF_SSRF_DNS_CHECK` | `true` | Pre-resolve hostnames to reject targets that point at private/internal IPs. Ignored for requests that specify a proxy, since the proxy — not this host — resolves and dials the name, making the local answer meaningless (behind a censored or fake-ip resolver it is often a planted address that would reject perfectly safe sites). Set to `false` to skip the DNS check entirely; IP literals are always checked. |
 
 ## Browser (Brave via DrissionPage)
 

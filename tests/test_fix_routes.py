@@ -137,3 +137,26 @@ def test_any_resolved_ip_private_rejected(monkeypatch):
         ]
     monkeypatch.setattr(socket, "getaddrinfo", multi)
     assert routes.is_safe_url("https://mixed.example.com") is False
+
+
+def test_planted_private_answer_allowed_when_proxied(monkeypatch):
+    """A proxied name is resolved remotely, so a poisoned local answer must not 400 it."""
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo("2001::9df0:a20"))
+    assert routes.is_safe_url("https://www.jable.tv", "http://127.0.0.1:7890") is True
+
+
+def test_private_literal_rejected_even_when_proxied():
+    assert routes.is_safe_url("http://10.1.2.3:8080", "http://127.0.0.1:7890") is False
+
+
+def test_dns_check_can_be_disabled(monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo("127.0.0.1"))
+    monkeypatch.setenv("CF_SSRF_DNS_CHECK", "false")
+    assert routes.is_safe_url("https://internal.example.com") is True
+
+
+def test_x_impersonate_is_forwarded_to_mirror():
+    client, captured = _client_with_capturing_mirror()
+    resp = client.get("/foo", headers={"x-hostname": "example.com", "x-impersonate": "safari"})
+    assert resp.status_code == 200
+    assert captured["impersonate"] == "safari"

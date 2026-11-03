@@ -15,6 +15,7 @@ from cf_bypasser.utils.misc import cache_key
 from cf_bypasser.utils.constants import (
     CF_COOKIE_PREFIXES,
     CHROME_HEADERS,
+    IMPERSONATE,
     MAX_SESSIONS,
     MIRROR_MAX_RETRIES,
     MIRROR_RETRY_BACKOFF_SECONDS,
@@ -92,7 +93,7 @@ class RequestMirror:
         cleaned_headers = {}
         for key, value in headers.items():
             key_lower = key.lower()
-            if key_lower not in ['x-hostname', 'x-proxy', 'x-bypass-cache', 'x-auth-token']:
+            if key_lower not in ['x-hostname', 'x-proxy', 'x-bypass-cache', 'x-auth-token', 'x-impersonate']:
                 cleaned_headers[key] = value
         return cleaned_headers
 
@@ -138,21 +139,22 @@ class RequestMirror:
 
         return url
 
-    def _new_session(self, proxy: Optional[str]) -> AsyncSession:
+    def _new_session(self, proxy: Optional[str], impersonate: str = IMPERSONATE) -> AsyncSession:
         return AsyncSession(
-            impersonate="chrome",  # match the pooled Chrome's fingerprint
+            impersonate=impersonate,  # must be a target the target zone accepts
             proxies={"http": proxy, "https": proxy} if proxy else None,
             timeout=SESSION_TIMEOUT_SECONDS,
         )
 
-    async def get_session(self, hostname: str, proxy: Optional[str] = None) -> AsyncSession:
-        session_key = f"{hostname}:{proxy or 'no-proxy'}"
+    async def get_session(self, hostname: str, proxy: Optional[str] = None,
+                          impersonate: str = IMPERSONATE) -> AsyncSession:
+        session_key = f"{hostname}:{proxy or 'no-proxy'}:{impersonate}"
 
         if session_key in self.session_cache:
             self.session_cache.move_to_end(session_key)
             return self.session_cache[session_key]
 
-        session = self._new_session(proxy)
+        session = self._new_session(proxy, impersonate)
         self.session_cache[session_key] = session
         self.session_cache.move_to_end(session_key)
 
@@ -249,16 +251,20 @@ class RequestMirror:
         proxy: Optional[str] = None,
         bypass_cache: bool = False,
         body: Optional[bytes] = None,
-        max_retries: int = MIRROR_MAX_RETRIES
+        max_retries: int = MIRROR_MAX_RETRIES,
+        impersonate: Optional[str] = None,
     ) -> Tuple[int, Dict[str, str], bytes]:
         """Mirror the request to the target hostname (parsed by the caller) with CF bypass."""
 
         if not hostname:
             raise ValueError("x-hostname header is required")
 
+        fingerprint = impersonate or IMPERSONATE
+
         for attempt in range(max_retries + 1):
             try:
-                logging.info(f"Mirroring {method} request to {hostname}{path} (attempt {attempt + 1}/{max_retries + 1})")
+                logging.info(f"Mirroring {method} request to {hostname}{path} "
+                             f"(attempt {attempt + 1}/{max_retries + 1}, fingerprint {fingerprint})")
 
                 target_url = self.build_target_url(hostname, path, query_string)
 
@@ -276,7 +282,8 @@ class RequestMirror:
 
                 reuse = getattr(self.bypasser, "cache_enabled", True)
                 # without caching, a fresh session per request: no target cookies carried between clients
-                session = await self.get_session(hostname, proxy) if reuse else self._new_session(proxy)
+                session = (await self.get_session(hostname, proxy, fingerprint) if reuse
+                           else self._new_session(proxy, fingerprint))
 
                 try:
                     response = await session.request(

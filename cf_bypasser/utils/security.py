@@ -1,5 +1,6 @@
 import ipaddress
 import logging
+import os
 import socket
 from typing import Optional
 from urllib.parse import parse_qsl, urlencode, urlparse
@@ -38,8 +39,26 @@ def _parse_ip_literal(host: str) -> Optional[ipaddress.IPv4Address | ipaddress.I
         return None
 
 
-def is_safe_url(url: str) -> bool:
-    """Check if the URL is safe (not localhost/private/internal); fails closed."""
+def _dns_check_enabled() -> bool:
+    """Whether hostnames are pre-resolved for the SSRF check (CF_SSRF_DNS_CHECK, on by default)."""
+    return os.environ.get("CF_SSRF_DNS_CHECK", "true").lower() in ("1", "true", "yes", "on")
+
+
+def _is_relayed(proxy: Optional[str]) -> bool:
+    """True when the request will be resolved and dialled by a proxy, not by this host."""
+    return bool(proxy and "://" in proxy)
+
+
+def is_safe_url(url: str, proxy: Optional[str] = None) -> bool:
+    """Check if the URL is safe (not localhost/private/internal); fails closed.
+
+    IP literals are always checked — they are the cheapest, unambiguous SSRF vector.
+    A *hostname* is only pre-resolved when this host will dial it itself. With a proxy the
+    name is resolved remotely, so the local answer describes nothing about the real target
+    and, behind a censored or fake-ip resolver, is often a planted address (e.g. jable.tv
+    resolving to Tumblr/Facebook IPs plus a Teredo 2001:: record that reads as private).
+    Trusting that answer rejects perfectly safe targets.
+    """
     try:
         parsed_url = urlparse(url)
         if parsed_url.scheme == "file":
@@ -51,6 +70,10 @@ def is_safe_url(url: str) -> bool:
         ip_literal = _parse_ip_literal(hostname)
         if ip_literal is not None:
             return not _ip_is_blocked(ip_literal)
+
+        if _is_relayed(proxy) or not _dns_check_enabled():
+            logging.debug(f"Skipping local DNS check for {hostname} (proxied or CF_SSRF_DNS_CHECK=false)")
+            return True
 
         infos = socket.getaddrinfo(hostname, None)
         if not infos:
