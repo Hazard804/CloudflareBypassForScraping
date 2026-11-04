@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 
 from cf_bypasser.utils.constants import APP_VERSION
 from cf_bypasser.utils.security import AccessLogRedactor
+from .errors import BypassError, bypass_error_handler
 from .routes import setup_routes, lifespan
 
 
@@ -48,6 +49,9 @@ def create_app() -> FastAPI:
     access_log = logging.getLogger("uvicorn.access")
     if not any(isinstance(f, AccessLogRedactor) for f in access_log.filters):
         access_log.addFilter(AccessLogRedactor())
+
+    # keeps `detail` unchanged for existing clients while adding the machine-readable error_code
+    app.add_exception_handler(BypassError, bypass_error_handler)
 
     setup_routes(app)
     return app

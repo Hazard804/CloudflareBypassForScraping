@@ -6,17 +6,17 @@ from unittest.mock import AsyncMock, patch, MagicMock
 def mock_bypasser():
     """Mock the CFBypasser for testing."""
     mock_instance = MagicMock()
-    mock_instance.get_or_generate_cookies = AsyncMock(return_value={
+    mock_instance.get_cookies_detailed = AsyncMock(return_value=({
         'cookies': {'cf_clearance': 'test_token_123', 'session': 'abc'},
         'user_agent': 'Mozilla/5.0 (Test)'
-    })
-    mock_instance.get_or_generate_html = AsyncMock(return_value={
+    }, ""))
+    mock_instance.get_html_detailed = AsyncMock(return_value=({
         'cookies': {'cf_clearance': 'test_token_123'},
         'user_agent': 'Mozilla/5.0 (Test)',
         'html': '<html><body>Test HTML</body></html>',
         'url': 'https://example.com'
-    })
-    
+    }, ""))
+
     with patch('cf_bypasser.server.routes.global_bypasser', mock_instance):
         yield mock_instance
 

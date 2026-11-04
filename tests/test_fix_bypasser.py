@@ -99,7 +99,9 @@ def fake_job(cookies, cf_detected=False, delay=0.0, tracker=None):
         data = {"cookies": dict(cookies), "user_agent": "FakeUA/1.0"}
         if want_html:
             data.update(html=CLEAR_HTML, url=url, status_code=200)
-        return data, cf_detected
+        # _job reports the page state now; bool input keeps the old "CF was detected" meaning
+        state = challenge.STATE_INTERACTIVE if cf_detected else challenge.STATE_NONE
+        return data, state
     return job
 
 

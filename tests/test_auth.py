@@ -28,12 +28,12 @@ def make_client(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
 
     async def fake_cookies(self, url, proxy=None, bypass_cache=False):
-        return {"cookies": {"cf_clearance": "x"}, "user_agent": "UA"}
+        return {"cookies": {"cf_clearance": "x"}, "user_agent": "UA"}, ""
 
     async def fake_mirror(self, **kw):
         return 200, {"content-type": "text/plain"}, b"mirrored"
 
-    monkeypatch.setattr(CFBypasser, "get_or_generate_cookies", fake_cookies)
+    monkeypatch.setattr(CFBypasser, "get_cookies_detailed", fake_cookies)
     monkeypatch.setattr(RequestMirror, "mirror_request", fake_mirror)
     clients = []
 

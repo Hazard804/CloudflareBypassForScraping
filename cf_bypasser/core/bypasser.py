@@ -88,11 +88,36 @@ class CFBypasser:
         return proxy, False
 
     @staticmethod
-    def _is_trustworthy(cookies: Dict[str, str], cf_detected: bool) -> bool:
-        """A CF-detected result is only trustworthy once a cf_clearance cookie exists."""
-        if not cf_detected:
+    def _is_trustworthy(cookies: Dict[str, str], state: Any) -> bool:
+        """Decide whether a solved page produced a usable session.
+
+        Only an *interactive* challenge makes Cloudflare issue cf_clearance. A site that is merely
+        proxied (state "none") never sets one, so requiring it there rejected every good session
+        and reported it as a bypass failure. A legacy boolean (True = "CF was detected") keeps the
+        old clearance requirement.
+        """
+        if state == challenge.STATE_BLOCK or state == challenge.STATE_ERROR:
+            return False
+        if state == challenge.STATE_INTERACTIVE:
+            return bool(cookies.get("cf_clearance"))
+        if state == challenge.STATE_NONE:
             return True
+        if state is False:
+            # legacy "no CF was detected" boolean
+            return True
+        # None (unknown/legacy callers) and True both mean "CF was in play" -> demand clearance
         return bool(cookies.get("cf_clearance"))
+
+    @staticmethod
+    def _failure_reason(state: Any) -> str:
+        """Stable machine-readable reason for `None` results (surfaced as error_code)."""
+        if state == challenge.STATE_BLOCK:
+            return "blocked"
+        if state == challenge.STATE_INTERACTIVE:
+            return "challenge_timeout"
+        if state == challenge.STATE_ERROR:
+            return "navigation_failed"
+        return "bypass_failed"
 
     async def _read_valid_cache(self, key: str, proxy: Optional[str]):
         """Return a still-valid cache entry, or None — invalidating it if the proxy exit IP rotated."""
@@ -114,8 +139,11 @@ class CFBypasser:
         proxy_server: Optional[str],
         cached_cookies: Optional[Dict[str, str]],
         mode: str,
-    ) -> Tuple[Optional[Dict[str, Any]], bool]:
-        """Runs in a worker thread: one disposable context, solve, extract. mode: cookies | html | fetch."""
+    ) -> Tuple[Optional[Dict[str, Any]], str]:
+        """Runs in a worker thread: one disposable context, solve, extract. mode: cookies | html | fetch.
+
+        Returns (data, state); data is None unless the page came back usable.
+        """
         with BrowserContextSession(browser, proxy_server) as session:
             if cached_cookies:
                 self.log_message("Restoring cached cookies...")
@@ -124,7 +152,7 @@ class CFBypasser:
             target = challenge.origin_of(url) if mode == "fetch" else url
             result = challenge.solve(session.tab, target, self.log_message)
             if not result.success:
-                return None, result.cf_detected
+                return None, result.state or challenge.STATE_ERROR
             data: Dict[str, Any] = {}
             if mode == "html":
                 data["html"] = challenge.stable_html(session.tab)
@@ -141,7 +169,7 @@ class CFBypasser:
                                                    proxy_server, url))
             data["cookies"] = session.get_cookies()
             data["user_agent"] = session.user_agent()
-            return data, result.cf_detected
+            return data, result.state or challenge.STATE_NONE
 
     @staticmethod
     def _download(url: str, cookies: Dict[str, str], user_agent: str, proxy_server: Optional[str],
@@ -196,7 +224,12 @@ class CFBypasser:
             }
 
     async def _run_in_browser(self, url, proxy, key, *, restore_cookies: bool, mode: str):
-        """Lease a browser, solve in a fresh context, cache trustworthy cookies. Returns data dict or None."""
+        """Lease a browser, solve in a fresh context, cache trustworthy cookies.
+
+        Returns (data, reason): data is a dict on success and reason is "".
+        On failure data is None and reason is a stable code ("blocked", "challenge_timeout",
+        "cookie_missing_clearance", "job_timeout", "browser_error", "navigation_failed").
+        """
         self.cookie_cache.clear_expired()
         cached_cookies = None
         if restore_cookies:
@@ -210,7 +243,7 @@ class CFBypasser:
             proxy_server, relayed = await self._resolve_proxy(proxy)
             async with self.pool.lease() as slot:
                 try:
-                    data, cf_detected = await asyncio.wait_for(
+                    data, state = await asyncio.wait_for(
                         self.pool.run(self._job, slot.browser, url, proxy_server, cached_cookies, mode),
                         timeout=JOB_TIMEOUT_SECONDS,
                     )
@@ -218,19 +251,20 @@ class CFBypasser:
                     # the worker thread may still be driving this browser; never hand it out again
                     slot.poisoned = True
                     raise
-            if data and self._is_trustworthy(data["cookies"], cf_detected):
+            if data and self._is_trustworthy(data["cookies"], state):
                 exit_ip = await get_exit_ip(proxy) if IP_CHECK_ENABLED else None
                 self.cookie_cache.set(key, data["cookies"], data["user_agent"], exit_ip=exit_ip)
-                return data
+                return data, ""
             if data:
                 self.log_message("CF detected but no cf_clearance cookie -- not caching")
-            return None
+                return None, "cookie_missing_clearance"
+            return None, self._failure_reason(state)
         except asyncio.TimeoutError:
             self.log_message(f"Browser job for {url} exceeded {JOB_TIMEOUT_SECONDS}s; restarting that browser")
-            return None
+            return None, "job_timeout"
         except Exception as e:
             self.log_message(f"Error running browser for {url}: {e}")
-            return None
+            return None, "browser_error"
         finally:
             if relayed:
                 await self.relays.release(proxy)
@@ -239,12 +273,19 @@ class CFBypasser:
         self, url: str, proxy: Optional[str] = None, bypass_cache: bool = False
     ) -> Optional[Dict[str, Any]]:
         """Get cached cookies or generate new ones; bypass_cache ignores a still-valid entry."""
+        data, _ = await self.get_cookies_detailed(url, proxy, bypass_cache=bypass_cache)
+        return data
+
+    async def get_cookies_detailed(
+        self, url: str, proxy: Optional[str] = None, bypass_cache: bool = False
+    ) -> Tuple[Optional[Dict[str, Any]], str]:
+        """Same as get_or_generate_cookies but also returns why it failed ("" on success)."""
         key = cache_key(urlparse(url).netloc, proxy)
 
         if not bypass_cache:
             cached = await self._read_valid_cache(key, proxy)
             if cached:
-                return {"cookies": cached.cookies, "user_agent": cached.user_agent}
+                return {"cookies": cached.cookies, "user_agent": cached.user_agent}, ""
 
         requested_at = datetime.now()
         if not self.cache_enabled:
@@ -256,13 +297,18 @@ class CFBypasser:
             # only cookies generated after this request arrived count as fresh
             cached = await self._read_valid_cache(key, proxy)
             if cached and (not bypass_cache or cached.timestamp >= requested_at):
-                return {"cookies": cached.cookies, "user_agent": cached.user_agent}
+                return {"cookies": cached.cookies, "user_agent": cached.user_agent}, ""
 
             self.log_message(f"Generating fresh cookies for {key}...")
             return await self._run_in_browser(url, proxy, key, restore_cookies=False, mode="cookies")
 
     async def get_or_generate_html(self, url: str, proxy: Optional[str] = None, bypass_cache: bool = False) -> Optional[Dict[str, Any]]:
         """Get HTML content along with cookies (cached or fresh)."""
+        data, _ = await self.get_html_detailed(url, proxy, bypass_cache=bypass_cache)
+        return data
+
+    async def get_html_detailed(self, url: str, proxy: Optional[str] = None, bypass_cache: bool = False) -> Tuple[Optional[Dict[str, Any]], str]:
+        """Same as get_or_generate_html but also returns why it failed ("" on success)."""
         key = cache_key(urlparse(url).netloc, proxy)
         self.log_message(f"Getting HTML content for {url}...")
         # no in-flight lock: HTML is fetched fresh per request, bounded by the pool size
@@ -270,6 +316,11 @@ class CFBypasser:
 
     async def fetch_bytes(self, url: str, proxy: Optional[str] = None, bypass_cache: bool = False) -> Optional[Dict[str, Any]]:
         """Raw response bytes (PDFs, images, JSON...) fetched by the browser after clearing the challenge."""
+        data, _ = await self.fetch_bytes_detailed(url, proxy, bypass_cache=bypass_cache)
+        return data
+
+    async def fetch_bytes_detailed(self, url: str, proxy: Optional[str] = None, bypass_cache: bool = False) -> Tuple[Optional[Dict[str, Any]], str]:
+        """Same as fetch_bytes but also returns why it failed ("" on success)."""
         key = cache_key(urlparse(url).netloc, proxy)
         self.log_message(f"Fetching bytes for {url}...")
         return await self._run_in_browser(url, proxy, key, restore_cookies=not bypass_cache, mode="fetch")

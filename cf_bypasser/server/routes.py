@@ -8,6 +8,7 @@ from fastapi import FastAPI, HTTPException, Request, Response, Query, Depends
 
 from cf_bypasser.core.bypasser import CFBypasser
 from cf_bypasser.core.mirror import RequestMirror
+from cf_bypasser.server.errors import BypassError
 from cf_bypasser.server.models import (
     BrowserPoolResponse, CookieResponse, CacheStatsResponse, CacheClearResponse, CacheRefreshResponse,
     ErrorResponse,
@@ -107,10 +108,10 @@ def setup_routes(app: FastAPI):
             start_time = time.time()
             logger.info(f"Getting cookies for {url} (retries: {retries}, proxy: {'yes' if proxy else 'no'})")
 
-            data = await bypasser.get_or_generate_cookies(url, proxy, bypass_cache=bypassCookieCache)
+            data, reason = await bypasser.get_cookies_detailed(url, proxy, bypass_cache=bypassCookieCache)
 
             if not data:
-                raise HTTPException(status_code=500, detail="Failed to bypass Cloudflare protection")
+                raise BypassError(detail="Failed to bypass Cloudflare protection", code=reason)
 
             generation_time = int((time.time() - start_time) * 1000)
             cf_cookies = [name for name in data["cookies"].keys() if name.startswith(CF_COOKIE_PREFIXES)]
@@ -152,13 +153,13 @@ def setup_routes(app: FastAPI):
         logger.info(f"Refreshing cookies for {url} (proxy: {'yes' if proxy else 'no'})")
 
         try:
-            data = await bypasser.get_or_generate_cookies(url, proxy, bypass_cache=True)
+            data, reason = await bypasser.get_cookies_detailed(url, proxy, bypass_cache=True)
         except Exception as e:
             logger.error(f"Error refreshing cookies for {url}: {redact_proxy(str(e))}")
             raise HTTPException(status_code=500, detail="Internal server error")
 
         if not data:
-            raise HTTPException(status_code=500, detail="Failed to bypass Cloudflare protection")
+            raise BypassError(detail="Failed to bypass Cloudflare protection", code=reason)
 
         generation_time = int((time.time() - start_time) * 1000)
         cf_cookies = [name for name in data["cookies"].keys() if name.startswith(CF_COOKIE_PREFIXES)]
@@ -191,10 +192,10 @@ def setup_routes(app: FastAPI):
             start_time = time.time()
             logger.info(f"Getting HTML content for {url} (retries: {retries}, proxy: {'yes' if proxy else 'no'})")
 
-            data = await bypasser.get_or_generate_html(url, proxy, bypass_cache=bypassCookieCache)
+            data, reason = await bypasser.get_html_detailed(url, proxy, bypass_cache=bypassCookieCache)
 
             if not data:
-                raise HTTPException(status_code=500, detail="Failed to bypass Cloudflare protection")
+                raise BypassError(detail="Failed to bypass Cloudflare protection", code=reason)
 
             generation_time = int((time.time() - start_time) * 1000)
             cf_cookies = [name for name in data["cookies"].keys() if name.startswith(CF_COOKIE_PREFIXES)]
@@ -234,9 +235,9 @@ def setup_routes(app: FastAPI):
 
         try:
             start_time = time.time()
-            data = await bypasser.fetch_bytes(url, proxy, bypass_cache=bypassCookieCache)
+            data, reason = await bypasser.fetch_bytes_detailed(url, proxy, bypass_cache=bypassCookieCache)
             if not data:
-                raise HTTPException(status_code=500, detail="Failed to bypass Cloudflare protection")
+                raise BypassError(detail="Failed to bypass Cloudflare protection", code=reason)
 
             generation_time = int((time.time() - start_time) * 1000)
             logger.info(f"Fetched {len(data['body'])} bytes ({data['content_type']}) from {url} in {generation_time}ms")

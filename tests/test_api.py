@@ -67,8 +67,8 @@ def test_openapi_paths_and_params_unchanged(api):
 
 def test_cookies_response_shape(api, monkeypatch):
     async def fake(self, url, proxy=None, bypass_cache=False):
-        return {"cookies": {"cf_clearance": "x"}, "user_agent": "UA"}
-    monkeypatch.setattr(CFBypasser, "get_or_generate_cookies", fake)
+        return {"cookies": {"cf_clearance": "x"}, "user_agent": "UA"}, ""
+    monkeypatch.setattr(CFBypasser, "get_cookies_detailed", fake)
     r = api.get("/cookies", params={"url": "https://example.com", "retries": 3})
     assert r.status_code == 200
     assert r.json() == {"cookies": {"cf_clearance": "x"}, "user_agent": "UA"}
@@ -79,8 +79,8 @@ def test_cookies_bypass_cache_param_forwarded(api, monkeypatch):
 
     async def fake(self, url, proxy=None, bypass_cache=False):
         seen["bypass_cache"] = bypass_cache
-        return {"cookies": {"a": "1"}, "user_agent": "UA"}
-    monkeypatch.setattr(CFBypasser, "get_or_generate_cookies", fake)
+        return {"cookies": {"a": "1"}, "user_agent": "UA"}, ""
+    monkeypatch.setattr(CFBypasser, "get_cookies_detailed", fake)
     api.get("/cookies", params={"url": "https://example.com", "bypassCookieCache": "true"})
     assert seen["bypass_cache"] is True
     api.get("/cookies", params={"url": "https://example.com"})
@@ -89,16 +89,16 @@ def test_cookies_bypass_cache_param_forwarded(api, monkeypatch):
 
 def test_cookies_failure_detail_unchanged(api, monkeypatch):
     async def fake(self, url, proxy=None, bypass_cache=False):
-        return None
-    monkeypatch.setattr(CFBypasser, "get_or_generate_cookies", fake)
+        return None, "challenge_timeout"
+    monkeypatch.setattr(CFBypasser, "get_cookies_detailed", fake)
     r = api.get("/cookies", params={"url": "https://example.com"})
     assert r.status_code == 500 and r.json()["detail"] == "Failed to bypass Cloudflare protection"
 
 
 def test_html_headers_unchanged(api, monkeypatch):
     async def fake(self, url, proxy=None, bypass_cache=False):
-        return {"cookies": {"a": "1"}, "user_agent": "UA", "html": "<p>hi</p>", "url": url, "status_code": 200}
-    monkeypatch.setattr(CFBypasser, "get_or_generate_html", fake)
+        return {"cookies": {"a": "1"}, "user_agent": "UA", "html": "<p>hi</p>", "url": url, "status_code": 200}, ""
+    monkeypatch.setattr(CFBypasser, "get_html_detailed", fake)
     r = api.get("/html", params={"url": "https://example.com", "bypassCookieCache": "true"})
     assert r.status_code == 200 and r.text == "<p>hi</p>"
     assert r.headers["content-type"].startswith("text/html")
@@ -119,8 +119,8 @@ def test_mirror_headers_unchanged(api, monkeypatch):
 def test_fetch_returns_raw_bytes(api, monkeypatch):
     async def fake(self, url, proxy=None, bypass_cache=False):
         return {"cookies": {}, "user_agent": "UA", "body": b"%PDF-1.7\x00\xff", "status_code": 200,
-                "content_type": "application/pdf", "url": url}
-    monkeypatch.setattr(CFBypasser, "fetch_bytes", fake)
+                "content_type": "application/pdf", "url": url}, ""
+    monkeypatch.setattr(CFBypasser, "fetch_bytes_detailed", fake)
     r = api.get("/fetch", params={"url": "https://example.com/a.pdf"})
     assert r.status_code == 200 and r.content == b"%PDF-1.7\x00\xff"
     assert r.headers["content-type"] == "application/pdf"
@@ -130,8 +130,8 @@ def test_fetch_returns_raw_bytes(api, monkeypatch):
 def test_fetch_passes_upstream_status(api, monkeypatch):
     async def fake(self, url, proxy=None, bypass_cache=False):
         return {"cookies": {}, "user_agent": "UA", "body": b"nope", "status_code": 404,
-                "content_type": "text/plain", "url": url}
-    monkeypatch.setattr(CFBypasser, "fetch_bytes", fake)
+                "content_type": "text/plain", "url": url}, ""
+    monkeypatch.setattr(CFBypasser, "fetch_bytes_detailed", fake)
     assert api.get("/fetch", params={"url": "https://example.com/x"}).status_code == 404
 
 
@@ -141,8 +141,8 @@ def test_fetch_rejects_unsafe_url(api):
 
 def test_fetch_failure_is_500(api, monkeypatch):
     async def fake(self, url, proxy=None, bypass_cache=False):
-        return None
-    monkeypatch.setattr(CFBypasser, "fetch_bytes", fake)
+        return None, "blocked"
+    monkeypatch.setattr(CFBypasser, "fetch_bytes_detailed", fake)
     assert api.get("/fetch", params={"url": "https://example.com/x"}).status_code == 500
 
 

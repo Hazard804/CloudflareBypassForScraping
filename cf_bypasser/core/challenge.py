@@ -1,7 +1,7 @@
 import base64
 import json
 import logging
-from collections import namedtuple
+from dataclasses import dataclass
 from time import monotonic, sleep
 from typing import Any, Callable, Dict, Optional
 from urllib.parse import urlsplit
@@ -19,7 +19,31 @@ from cf_bypasser.utils.constants import (
     HTML_SETTLE_STABLE_ROUNDS,
 )
 
-ChallengeResult = namedtuple("ChallengeResult", ("success", "cf_detected", "status"))
+# The four page states a navigation can land on. "none" is the important one: the site answered
+# with its own content and there is no challenge to solve, so there is nothing to fail on.
+STATE_NONE = "none"
+STATE_INTERACTIVE = "interactive"
+STATE_BLOCK = "block"
+STATE_ERROR = "error"
+
+
+@dataclass(frozen=True)
+class ChallengeResult:
+    """Outcome of one navigate-and-solve cycle.
+
+    `state` says what the page actually was (see STATE_*); it is what downstream trust decisions
+    must use. The first three fields still iterate as a 3-tuple so existing
+    `success, cf_detected, status = solve(...)` callers keep working.
+    """
+
+    success: bool
+    cf_detected: bool
+    status: int
+    state: Optional[str] = None
+
+    def __iter__(self):
+        return iter((self.success, self.cf_detected, self.status))
+
 
 # block-specific phrases; "cloudflare ray id" alone is NOT enough (legit footers have it)
 BLOCK_MARKERS = (
@@ -27,6 +51,34 @@ BLOCK_MARKERS = (
     "sorry, you have been blocked",
     "error 1020",
     "access denied",
+)
+
+# Markers that only a real Cloudflare interstitial carries. Deliberately narrow: the challenge
+# script Cloudflare injects into *every* proxied page (static.cloudflareinsights.com beacons and
+# /cdn-cgi/challenge-platform/scripts/jsd/...) is NOT a challenge, and treating it as one made
+# ordinary pages look protected -- which then forced a cf_clearance requirement that sites without
+# an active challenge never satisfy.
+INTERACTIVE_MARKERS = (
+    "cf-chl-widget",
+    "cf_chl_opt",
+    "__cf_chl",
+    "challenge-platform/h/",
+    "challenge-form",
+    "challenge-running",
+    "verify you are human",
+    "please complete the captcha",
+    "checking your browser",
+)
+
+# Cloudflare writes these titles itself, so they are the most reliable single signal (and they
+# still match challenge variants whose scripts we do not recognise yet). Kept free of generic
+# phrases like "please wait" -- a false positive here would make a healthy page fail.
+INTERACTIVE_TITLES = (
+    "just a moment",
+    "attention required",
+    "请稍候",
+    "稍等片刻",
+    "正在验证",
 )
 
 _NAV_STATUS_JS = "return (performance.getEntriesByType('navigation')[0] || {}).responseStatus || 0"
@@ -112,15 +164,32 @@ def click_turnstile(tab: Any, log: Callable[[str], None] = logging.info) -> bool
 def is_bypassed(tab: Any, log: Callable[[str], None] = logging.info) -> bool:
     """Check if the Cloudflare challenge has been cleared (and not a block page)."""
     try:
-        if "just a moment" in (tab.title or "").lower():
+        if any(marker in (tab.title or "").lower() for marker in INTERACTIVE_TITLES):
             return False
         lowered = tab.html.lower()
-        if "please complete the captcha" in lowered:
+        if any(marker in lowered for marker in INTERACTIVE_MARKERS):
             return False
         return not any(marker in lowered for marker in BLOCK_MARKERS)
     except Exception as e:
         log(f"Error checking bypass status: {e}")
         return False
+
+
+def detect_state(html: str, title: str = "") -> str:
+    """Classify the page as none / interactive / block.
+
+    Keyword-only classification ("does the page mention cloudflare?") is wrong in both directions:
+    every Cloudflare-proxied page carries the jsd beacon script, while localized or widget-only
+    interstitials can drop the word entirely. Look for the interstitial's own markers instead.
+    """
+    lowered_html = (html or "").lower()
+    if any(marker in lowered_html for marker in BLOCK_MARKERS):
+        return STATE_BLOCK
+    if any(marker in (title or "").lower() for marker in INTERACTIVE_TITLES):
+        return STATE_INTERACTIVE
+    if any(marker in lowered_html for marker in INTERACTIVE_MARKERS):
+        return STATE_INTERACTIVE
+    return STATE_NONE
 
 
 def _nav_status(tab: Any, default: int) -> int:
@@ -132,7 +201,6 @@ def _nav_status(tab: Any, default: int) -> int:
 
 def solve(tab: Any, url: str, log: Callable[[str], None] = logging.info) -> ChallengeResult:
     """Navigate to URL and clear any Cloudflare challenge, polling fast for the checkbox."""
-    cf_detected = False
     status = 200
     try:
         log(f"Navigating to {url}")
@@ -142,32 +210,38 @@ def solve(tab: Any, url: str, log: Callable[[str], None] = logging.info) -> Chal
             status = _nav_status(tab, status)
         except Exception as nav_err:
             log(f"Navigation failed: {nav_err}")
-            return ChallengeResult(False, cf_detected, 0)
-        # a dead proxy or DNS failure renders Chrome's own error page, which has no "cloudflare" in it
+            return ChallengeResult(False, False, 0, STATE_ERROR)
+        # a dead proxy or DNS failure renders Chrome's own error page, which has no challenge in it
         if not loaded or (tab.url or "").startswith("chrome-error://"):
             log(f"Navigation failed (proxy or network error) for {url}")
-            return ChallengeResult(False, cf_detected, 0)
+            return ChallengeResult(False, False, 0, STATE_ERROR)
 
         try:
             html_content = tab.html
         except Exception:
             # a failed read tells us nothing; never claim success on empty content
             log("Could not read page content -- treating as unconfirmed")
-            return ChallengeResult(is_bypassed(tab, log), cf_detected, status)
+            return ChallengeResult(False, False, status, STATE_ERROR)
 
-        # the interstitial is the HTTP response itself, so this is decidable right away
-        if "cloudflare" not in html_content.lower():
-            log("No Cloudflare protection detected -- either not protected or already bypassed")
-            return ChallengeResult(True, cf_detected, status)
+        # The page classifies itself: the interstitial is the HTTP response, so this is decidable
+        # right away and does not need to poll.
+        state = detect_state(html_content, getattr(tab, "title", "") or "")
+        if state == STATE_NONE:
+            log("No Cloudflare challenge here -- returning the page as-is")
+            return ChallengeResult(True, False, status, STATE_NONE)
 
-        cf_detected = True
+        if state == STATE_BLOCK:
+            # Polling a block page only burns the challenge timeout and looks like a solver failure.
+            log("Cloudflare block page detected -- not retryable")
+            return ChallengeResult(False, True, status, STATE_BLOCK)
+
         log("Cloudflare challenge detected. Polling for the checkbox...")
         deadline = monotonic() + CHALLENGE_TIMEOUT_SECONDS
         next_click = 0.0
         while True:
             if is_bypassed(tab, log):
                 log("Cloudflare challenge solved successfully!")
-                return ChallengeResult(True, cf_detected, _nav_status(tab, status))
+                return ChallengeResult(True, True, _nav_status(tab, status), STATE_INTERACTIVE)
             now = monotonic()
             if now >= deadline:
                 break
@@ -177,10 +251,10 @@ def solve(tab: Any, url: str, log: Callable[[str], None] = logging.info) -> Chal
             sleep(CHALLENGE_POLL_SECONDS)
 
         log("Failed to solve Cloudflare challenge")
-        return ChallengeResult(False, cf_detected, status)
+        return ChallengeResult(False, True, status, STATE_INTERACTIVE)
     except Exception as e:
         log(f"Error solving Cloudflare challenge: {e}")
-        return ChallengeResult(False, cf_detected, status)
+        return ChallengeResult(False, False, status, STATE_ERROR)
 
 
 def stable_html(tab: Any) -> str:
